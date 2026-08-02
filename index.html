@@ -5,7 +5,7 @@
 <!-- viewport-fit + user-scalable=no keeps the board steady on phones -->
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#050806">
-<meta name="description" content="A retro CRT-styled Snake game. Keyboard, swipe and D-pad controls.">
+<meta name="description" content="A retro CRT-styled Snake game with a perfect Hamiltonian-cycle autopilot.">
 <title>NEON SNAKE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -110,7 +110,7 @@
     touch-action: none;
   }
 
-  /* Overlay screens (start / game over / paused) sit on top of the canvas. */
+  /* Overlay screens (start / game over / win / paused) sit on the canvas. */
   .overlay {
     position: absolute;
     inset: 0;
@@ -147,6 +147,7 @@
   .overlay p { margin: 0; color: var(--green-dim); }
   .overlay .keys { color: var(--green); }
   .big { font-size: clamp(11px, 4vw, 16px); color: var(--amber); text-shadow: 0 0 10px rgba(255, 204, 51, .6); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 
   @keyframes flicker {
     0%, 96%, 100% { opacity: 1; }
@@ -174,40 +175,46 @@
   button:active { transform: translate(2px, 2px); box-shadow: 0 0 12px rgba(57, 255, 20, .5), 2px 2px 0 var(--green-dim); }
   button:focus-visible { outline: 2px dashed var(--amber); outline-offset: 4px; }
 
-  /* ------------------------------ D-pad ----------------------------- */
-  #dpad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: repeat(3, 1fr);
-    gap: 6px;
-    width: min(46vw, 190px);
-    aspect-ratio: 1;
-    touch-action: none;
+  /* Secondary (outline) buttons — the AI demo link on the start screen. */
+  button.ghost {
+    color: var(--green);
+    background: transparent;
+    border: 2px solid var(--green-dim);
+    box-shadow: none;
   }
-  /* Only worth showing on touch devices; desktop gets the arrow keys. */
-  @media (hover: hover) and (pointer: fine) { #dpad { display: none; } }
+  button.ghost:active { background: rgba(57, 255, 20, .15); }
 
-  #dpad button {
-    padding: 0;
-    font-size: clamp(12px, 4vw, 18px);
+  /* --------------------------- Control bar -------------------------- */
+  #controls {
+    display: flex;
+    gap: clamp(6px, 2vw, 12px);
+    width: 100%;
+    max-width: 520px;
+    justify-content: center;
+  }
+
+  #controls button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 14px 4px;
+    font-size: clamp(7px, 2.5vw, 11px);
     color: var(--green);
     background: rgba(57, 255, 20, .07);
     border: 2px solid var(--green-dim);
     box-shadow: inset 0 0 12px rgba(57, 255, 20, .12);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
   }
-  #dpad button:active {
-    transform: none;
-    background: rgba(57, 255, 20, .3);
-    color: #000;
+  #controls button:active { transform: none; background: rgba(57, 255, 20, .25); }
+
+  /* Autopilot engaged. */
+  #controls button.on {
+    color: #12000c;
+    background: var(--magenta);
+    border-color: var(--magenta);
+    box-shadow: 0 0 14px rgba(255, 47, 185, .6);
   }
-  .pad-up    { grid-area: 1 / 2; }
-  .pad-left  { grid-area: 2 / 1; }
-  .pad-mid   { grid-area: 2 / 2; border: none !important; box-shadow: none !important; background: none !important; }
-  .pad-right { grid-area: 2 / 3; }
-  .pad-down  { grid-area: 3 / 2; }
 
   footer {
     font-size: clamp(6px, 2vw, 9px);
@@ -220,7 +227,8 @@
     body { flex-direction: row; flex-wrap: wrap; }
     header { max-width: none; width: auto; flex-direction: column; align-items: flex-start; gap: 8px; }
     footer { display: none; }
-    #dpad { width: min(28vw, 150px); }
+    #controls { flex-direction: column; width: auto; max-width: none; }
+    #controls button { flex: 0 0 auto; padding: 12px 10px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -250,11 +258,14 @@
       DON'T EAT YOURSELF
     </p>
     <p class="keys">
-      ARROWS / WASD<br>
-      SWIPE OR D-PAD<br>
+      ARROWS / WASD / SWIPE<br>
+      I = AUTOPILOT &nbsp; F = SPEED<br>
       SPACE = PAUSE
     </p>
-    <button id="startBtn">PRESS START</button>
+    <div class="row">
+      <button id="startBtn">PRESS START</button>
+      <button id="demoBtn" class="ghost">WATCH AI</button>
+    </div>
   </div>
 
   <!-- Game over screen -->
@@ -265,6 +276,14 @@
     <button id="againBtn">PLAY AGAIN</button>
   </div>
 
+  <!-- Win screen: the whole board is snake -->
+  <div class="overlay" id="winScreen" hidden>
+    <h2 style="color:var(--amber);text-shadow:0 0 10px var(--amber)">PERFECT<br>GAME</h2>
+    <p class="big">SCORE <span id="winScore">0</span></p>
+    <p>BOARD FILLED<br>NOTHING LEFT TO EAT</p>
+    <button id="winBtn">PLAY AGAIN</button>
+  </div>
+
   <!-- Pause screen -->
   <div class="overlay" id="pauseScreen" hidden>
     <h2>PAUSED</h2>
@@ -272,16 +291,14 @@
   </div>
 </div>
 
-<!-- On-screen D-pad (touch devices) -->
-<div id="dpad" role="group" aria-label="Direction pad">
-  <button class="pad-up"    data-dir="up"    aria-label="Up">▲</button>
-  <button class="pad-left"  data-dir="left"  aria-label="Left">◀</button>
-  <span   class="pad-mid"></span>
-  <button class="pad-right" data-dir="right" aria-label="Right">▶</button>
-  <button class="pad-down"  data-dir="down"  aria-label="Down">▼</button>
+<!-- Control bar: autopilot, speed, pause -->
+<div id="controls">
+  <button id="aiBtn"    type="button" aria-pressed="false">AI: OFF</button>
+  <button id="speedBtn" type="button">SPEED 1&times;</button>
+  <button id="pauseBtn" type="button">PAUSE</button>
 </div>
 
-<footer>GRID-LOCKED · 60FPS · SINGLE FILE</footer>
+<footer>GRID-LOCKED &middot; HAMILTONIAN AI &middot; SINGLE FILE</footer>
 
 <script>
 (() => {
@@ -290,12 +307,25 @@
   // =================================================================
   // Config
   // =================================================================
-  const GRID       = 21;   // cells per side (odd, so the snake starts centred)
+  // GRID must be EVEN: a grid graph only has a Hamiltonian cycle when it has
+  // an even number of cells, and the autopilot's safety proof rests on that
+  // cycle existing. 20x20 = 400 cells.
+  const GRID       = 20;
+  const N          = GRID * GRID;
   const START_LEN  = 4;    // initial snake length
+  const START_ROW  = GRID / 2;   // even row — see buildCycle()
   const BASE_STEP  = 140;  // ms per move at score 0
   const MIN_STEP   = 62;   // fastest the snake will ever go
   const RAMP       = 3.2;  // ms shaved off the step per pellet eaten
   const HISCORE_KEY = "neon-snake-hiscore";
+
+  const SPEEDS = [
+    { mult: 1,  label: "1&times;"  },
+    { mult: 2,  label: "2&times;"  },
+    { mult: 4,  label: "4&times;"  },
+    { mult: 8,  label: "8&times;"  },
+    { mult: 32, label: "MAX" },
+  ];
 
   // Grid directions. `axis` blocks 180-degree turns into your own neck.
   const DIRS = {
@@ -304,6 +334,7 @@
     left:  { x: -1, y:  0, axis: "x" },
     right: { x:  1, y:  0, axis: "x" },
   };
+  const DIR_LIST = [DIRS.up, DIRS.down, DIRS.left, DIRS.right];
 
   // =================================================================
   // DOM
@@ -311,21 +342,26 @@
   const canvas      = document.getElementById("board");
   const ctx         = canvas.getContext("2d", { alpha: false });
   const stage       = document.getElementById("stage");
-  const dpad        = document.getElementById("dpad");
+  const controls    = document.getElementById("controls");
   const header      = document.querySelector("header");
   const footer      = document.querySelector("footer");
   const scoreEl     = document.getElementById("score");
   const hiscoreEl   = document.getElementById("hiscore");
   const finalEl     = document.getElementById("finalScore");
+  const winScoreEl  = document.getElementById("winScore");
   const overNote    = document.getElementById("overNote");
   const startScreen = document.getElementById("startScreen");
   const overScreen  = document.getElementById("overScreen");
+  const winScreen   = document.getElementById("winScreen");
   const pauseScreen = document.getElementById("pauseScreen");
+  const aiBtn       = document.getElementById("aiBtn");
+  const speedBtn    = document.getElementById("speedBtn");
+  const pauseBtn    = document.getElementById("pauseBtn");
 
   // =================================================================
   // State
   // =================================================================
-  const STATE = { START: "start", PLAYING: "playing", PAUSED: "paused", OVER: "over" };
+  const STATE = { START: "start", PLAYING: "playing", PAUSED: "paused", OVER: "over", WIN: "win" };
 
   let state    = STATE.START;
   let snake    = [];      // [{x, y}, ...] head first
@@ -336,71 +372,68 @@
   let score    = 0;
   let hiscore  = 0;
   let cell     = 16;      // device pixels per cell (set by resize)
+  let ai       = false;   // autopilot engaged
+  let aiUsed   = false;   // autopilot ran this game -> keep it out of the high score
+  let aiSense  = 0;       // which way round the tour the autopilot is walking
+  let speedIdx = 0;
 
   let acc       = 0;      // accumulated ms since the last move
   let lastFrame = 0;
-  let tickAt    = 0;      // timestamp of the last move, for interpolating effects
   let deathFlash = 0;     // frames of red flash left after dying
 
   const key = (x, y) => x + "," + y;
+  const idx = (x, y) => y * GRID + x;
 
   try { hiscore = parseInt(localStorage.getItem(HISCORE_KEY), 10) || 0; } catch (_) { hiscore = 0; }
   hiscoreEl.textContent = hiscore;
 
   // =================================================================
-  // Sizing — keep the grid pixel-perfect on any screen / DPR
+  // Hamiltonian cycle
+  //
+  // A closed tour through every cell exactly once. Walk it forever and you
+  // can never hit a wall or your own body: the snake occupies one contiguous
+  // run of the tour, and its tail vacates a cell every time its head claims
+  // one. That is the autopilot's safety net.
+  //
+  // Layout ("comb"): rows 1..GRID-1 are walked boustrophedon (left-to-right
+  // on even rows, right-to-left on odd), then column 0 is the spine walked
+  // bottom-to-top back to the start. The last row must be odd-numbered so it
+  // ends at x=1, next to the spine — which is why GRID has to be even.
   // =================================================================
-  function resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const bs  = getComputedStyle(document.body);
-    const row = bs.flexDirection === "row";   // landscape layout
+  const cycle = new Int32Array(N);   // cell index -> position in the tour
+  const tour  = new Int32Array(N);   // position in the tour -> cell index
 
-    // Measure the real chrome (HUD, D-pad, footer + flex gaps) so the board
-    // can claim every remaining pixel instead of guessing.
-    const gap  = parseFloat(bs.rowGap) || 0;
-    const padY = parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom);
-    const padX = parseFloat(bs.paddingLeft) + parseFloat(bs.paddingRight);
-
-    // In portrait the chrome stacks above/below the board; in the landscape
-    // row layout it sits beside it. Measure whichever axis it eats into.
-    let used = 0, siblings = 0;
-    for (const el of [header, dpad, footer]) {
-      const box = row ? el.offsetWidth : el.offsetHeight;   // 0 when display:none
-      if (box > 0) { used += box; siblings++; }
+  function buildCycle() {
+    const order = [];
+    for (let y = 0; y < GRID; y++) {
+      if (y % 2 === 0) for (let x = 1; x < GRID; x++)  order.push(idx(x, y));
+      else             for (let x = GRID - 1; x >= 1; x--) order.push(idx(x, y));
     }
-    const eaten = used + gap * siblings;
-
-    const maxW    = Math.min(window.innerWidth  - padX - (row ? eaten : 0), 520);
-    const maxH    = window.innerHeight - padY - (row ? 0 : eaten);
-    const cssSize = Math.max(150, Math.min(maxW, maxH));
-
-    // Floor the cell size in device pixels so every cell is identical and
-    // lands on whole pixels — that is what keeps the look crisp and blocky.
-    cell = Math.max(4, Math.floor((cssSize * dpr) / GRID));
-    const px = cell * GRID;
-
-    canvas.width  = px;
-    canvas.height = px;
-    canvas.style.width  = (px / dpr) + "px";
-    canvas.style.height = (px / dpr) + "px";
-
-    ctx.imageSmoothingEnabled = false;
-    draw();
+    for (let y = GRID - 1; y >= 0; y--) order.push(idx(0, y));
+    for (let i = 0; i < order.length; i++) { cycle[order[i]] = i; tour[i] = order[i]; }
   }
+  buildCycle();
+
+  /** Steps forward along the tour to get from cell `a` to cell `b`. */
+  const ahead = (a, b) => (b - a + N) % N;
 
   // =================================================================
   // Game setup
   // =================================================================
   function reset() {
-    const mid = (GRID - 1) >> 1;
+    // Start on an even row, heading right — that is the direction the tour
+    // runs there, so the snake begins perfectly aligned with the cycle and
+    // the autopilot can be trusted from move one.
     snake = [];
-    for (let i = 0; i < START_LEN; i++) snake.push({ x: mid - i, y: mid });
+    for (let i = 0; i < START_LEN; i++) snake.push({ x: START_ROW - i, y: START_ROW });
 
     occupied = new Set(snake.map(s => key(s.x, s.y)));
     dir      = DIRS.right;
     queued   = [];
     score    = 0;
     acc      = 0;
+    aiUsed   = ai;
+    aiSense  = 0;
     deathFlash = 0;
     scoreEl.textContent = "0";
     placeFood();
@@ -414,19 +447,302 @@
         if (!occupied.has(key(x, y))) free.push({ x, y });
       }
     }
-    if (!free.length) return;                     // board full: a perfect game
+    if (!free.length) { winGame(); return; }     // board full: a perfect game
     food = free[(Math.random() * free.length) | 0];
   }
 
   /** Move interval in ms — shortens as the score climbs. */
   function stepMs() {
-    return Math.max(MIN_STEP, BASE_STEP - score * RAMP);
+    return Math.max(MIN_STEP, BASE_STEP - score * RAMP) / SPEEDS[speedIdx].mult;
+  }
+
+  // =================================================================
+  // Autopilot
+  //
+  // Baseline: follow the Hamiltonian cycle, which cannot lose but takes up to
+  // a full lap per pellet. On top of that, shortcuts: hop forward several
+  // cycle positions at once when there is provably slack to do it.
+  //
+  // A shortcut splits the body into two runs of the tour, so the head must
+  // not lap round into the older run before it has vacated. The head is kept
+  // at least (length + 3) tour-steps behind the tail, which is far more slack
+  // than the healing window can consume, and every candidate move is then
+  // checked with a flood fill that the snake can still reach its own tail.
+  // =================================================================
+  const blocked = new Uint8Array(N);   // scratch buffers, reused every call
+  const seen    = new Uint8Array(N);
+  const stack   = new Int32Array(N);   // doubles as the BFS queue
+  const steps   = new Int32Array(N);   // BFS depth per cell
+
+  /**
+   * Breadth-first flood from `start` over cells not in `blocked`.
+   * @returns {{area: number, reachesTail: boolean, tailDist: number}}
+   */
+  function flood(start, tailCell) {
+    seen.fill(0);
+    let qh = 0, qt = 0, area = 0, tailDist = -1;
+    stack[qt++] = start;
+    seen[start] = 1;
+    steps[start] = 0;
+    while (qh < qt) {
+      const c = stack[qh++];
+      area++;
+      if (c === tailCell) tailDist = steps[c];
+      const x = c % GRID, y = (c / GRID) | 0;
+      const n = steps[c] + 1;
+      if (x > 0        && !seen[c - 1]    && !blocked[c - 1])    { seen[c - 1] = 1;    steps[c - 1] = n;    stack[qt++] = c - 1; }
+      if (x < GRID - 1 && !seen[c + 1]    && !blocked[c + 1])    { seen[c + 1] = 1;    steps[c + 1] = n;    stack[qt++] = c + 1; }
+      if (y > 0        && !seen[c - GRID] && !blocked[c - GRID]) { seen[c - GRID] = 1; steps[c - GRID] = n; stack[qt++] = c - GRID; }
+      if (y < GRID - 1 && !seen[c + GRID] && !blocked[c + GRID]) { seen[c + GRID] = 1; steps[c + GRID] = n; stack[qt++] = c + GRID; }
+    }
+    return { area, reachesTail: tailDist >= 0, tailDist };
+  }
+
+  /**
+   * Would the snake still be able to reach its own tail after moving to
+   * (nx, ny)? A snake that can see its tail always has a way out.
+   */
+  function survives(nx, ny) {
+    const eats = (nx === food.x && ny === food.y);
+    const len  = snake.length;
+
+    blocked.fill(0);
+    // The tail cell frees up on the next move unless we are growing into it.
+    const last = eats ? len : len - 1;
+    for (let i = 0; i < last; i++) blocked[idx(snake[i].x, snake[i].y)] = 1;
+
+    const head = idx(nx, ny);
+    blocked[head] = 1;
+    // The cell that will be the tail after this move. Leave it walkable: by
+    // the time the head could arrive there, the tail has moved on.
+    const tail = idx(snake[last - 1].x, snake[last - 1].y);
+    blocked[tail] = 0;
+    return flood(head, tail);
+  }
+
+  /**
+   * Which way round the tour are we travelling? A hand-steered snake can end
+   * up running against it — and since it is a cycle, backwards is exactly as
+   * safe as forwards. Reading the sense off the neck stops the autopilot from
+   * forever trying to turn into its own body.
+   * @returns {1|-1}
+   */
+  function sense() {
+    if (snake.length < 2) return 1;
+    const h    = cycle[idx(snake[0].x, snake[0].y)];
+    const neck = cycle[idx(snake[1].x, snake[1].y)];
+    return ahead(h, neck) === 1 ? -1 : 1;   // neck sits ahead => we run backwards
+  }
+
+  /** Steps from `a` to `b` travelling in the current sense. */
+  const along = (s, a, b) => (s > 0 ? ahead(a, b) : ahead(b, a));
+
+  /** True when the body occupies one unbroken run of the tour. */
+  function aligned(s) {
+    s = s || sense();
+    const h = cycle[idx(snake[0].x, snake[0].y)];
+    const t = cycle[idx(snake[snake.length - 1].x, snake[snake.length - 1].y)];
+    return along(s, t, h) === snake.length - 1;
+  }
+
+  // --- Rejoining the tour after a human has been steering ------------------
+  //
+  // A scrambled body is the one case the cycle alone does not cover, and
+  // "can I still see my tail?" is a guess, not a proof — it happily walks
+  // into a pocket. So simulate it exactly instead: fast-forward the tour walk
+  // until the body is a single unbroken run again. The healing window is
+  // bounded (the tail eats through the scrambled part in at most one body
+  // length of moves), so if that replay is collision-free the move is safe,
+  // and once healed the cycle's own guarantee takes over.
+  const simOcc  = new Uint8Array(N);
+  const simBody = new Int32Array(N + 8);   // ring buffer of cell indices
+
+  /**
+   * @param {1|-1} s      which way round the tour to walk
+   * @param {number} [first]  optional cell to step to first, before picking up
+   *                          the tour — lets a sideways move be verified too
+   * @returns {boolean} true if this heals into an unbroken run without collision
+   */
+  function healSafe(s, first) {
+    const capacity = N + 8;
+    let n = snake.length;
+    simOcc.fill(0);
+    for (let i = 0; i < n; i++) {
+      const c = idx(snake[i].x, snake[i].y);
+      simBody[i] = c;
+      simOcc[c] = 1;
+    }
+    let headPos = 0, tailPos = n - 1;
+    let foodCell = idx(food.x, food.y);
+
+    if (first !== undefined) {
+      const eats = (first === foodCell);
+      if (!eats) {
+        simOcc[simBody[tailPos]] = 0;
+        tailPos = (tailPos - 1 + capacity) % capacity;
+        n--;
+      }
+      if (simOcc[first]) return false;
+      headPos = (headPos - 1 + capacity) % capacity;
+      simBody[headPos] = first;
+      simOcc[first] = 1;
+      n++;
+      if (eats) foodCell = -1;
+    }
+
+    for (let guard = 0; guard < 2 * N; guard++) {
+      const h = simBody[headPos];
+      const t = simBody[tailPos];
+      if (along(s, cycle[t], cycle[h]) === n - 1) return true;      // healed
+
+      const next = tour[(cycle[h] + (s > 0 ? 1 : N - 1)) % N];
+      const eats = (next === foodCell);
+      if (!eats) {                                                  // tail vacates
+        simOcc[simBody[tailPos]] = 0;
+        tailPos = (tailPos - 1 + capacity) % capacity;
+        n--;
+      }
+      if (simOcc[next]) return false;                               // would collide
+      headPos = (headPos - 1 + capacity) % capacity;
+      simBody[headPos] = next;
+      simOcc[next] = 1;
+      n++;
+      if (eats) foodCell = -1;   // the next pellet is unknown; re-checked next move
+    }
+    return false;                // never settled — don't trust it
+  }
+
+  /**
+   * Which way round the tour to walk, or 0 if neither direction can be proven
+   * safe from here. Re-checked every move, so a pellet that spawns on the
+   * planned path is caught while there is still room to re-plan.
+   * @returns {1|-1|0}
+   */
+  function chooseSense() {
+    const nat = sense();
+    if (aligned(nat)) { aiSense = nat; return nat; }   // already on the tour
+    if (aiSense && healSafe(aiSense)) return aiSense;  // standing plan still works
+    if (healSafe(nat))  { aiSense =  nat; return  nat; }
+    if (healSafe(-nat)) { aiSense = -nat; return -nat; }
+    aiSense = 0;
+    return 0;
+  }
+
+  /** Pick a direction and steer. Called once per move while the AI is on. */
+  function steer() {
+    const head = snake[0];
+    const tail = snake[snake.length - 1];
+    const h    = cycle[idx(head.x, head.y)];
+    const t    = cycle[idx(tail.x, tail.y)];
+    const f    = cycle[idx(food.x, food.y)];
+    const len  = snake.length;
+    const plan = chooseSense();        // 0 when nothing can be proven safe
+    const s    = plan || sense();
+    const fit  = aligned(s);
+
+    // Scrambled body, but the replay says walking the tour this way heals
+    // cleanly — take that step. It is verified, so no guessing is needed.
+    if (plan !== 0 && !fit) {
+      const next = tour[(h + (s > 0 ? 1 : N - 1)) % N];   // h is already a tour position
+      const nx = next % GRID, ny = (next / GRID) | 0;
+      const d = DIR_LIST.find(v => head.x + v.x === nx && head.y + v.y === ny);
+      if (d) { dir = d; return; }
+    }
+
+    // How far the head may jump forward this move. 1 = plain cycle following.
+    //
+    // Shortcuts are only offered to an aligned snake: the margin below counts
+    // free space as the run of tour between head and tail, which is only
+    // true while the body is one unbroken run. Hand the autopilot a scrambled
+    // body (a human was steering) and it walks the tour strictly until the
+    // tail has caught up and the body is a single run again.
+    let cap = 1;
+    const gap  = along(s, h, t);       // clear run of tour between head and tail
+    const room = gap - len - 3;        // ...minus the safety margin
+    if (fit && len * 2 < N && room > 1) {
+      cap = room;
+      // Don't leap past the pellet — we still want to eat it on the way.
+      const toFood = along(s, h, f);
+      if (toFood > 0 && toFood < gap) cap = Math.min(cap, toFood);
+    }
+
+    // Legal moves: on the board, not into the body, not a reversal.
+    const moves = [];
+    for (const d of DIR_LIST) {
+      if (d.x === -dir.x && d.y === -dir.y) continue;
+      const nx = head.x + d.x, ny = head.y + d.y;
+      if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) continue;
+      if (occupied.has(key(nx, ny))) continue;      // tail included: conservative
+      moves.push({ d, nx, ny, jump: along(s, h, cycle[idx(nx, ny)]) });
+    }
+    if (!moves.length) return;                      // boxed in; the step will end it
+
+    // Fast path: plain cycle following with an unbroken body cannot fail, so
+    // skip the flood fill entirely. This is most of a long game.
+    if (cap === 1 && fit) {
+      const straight = moves.find(m => m.jump === 1);
+      if (straight) { dir = straight.d; return; }
+    }
+
+    // Furthest legal jump first, then progressively more cautious options.
+    moves.sort((a, b) => {
+      const aOk = a.jump >= 1 && a.jump <= cap;
+      const bOk = b.jump >= 1 && b.jump <= cap;
+      if (aOk !== bOk) return aOk ? -1 : 1;         // within the cap wins
+      return aOk ? b.jump - a.jump                  // ...furthest ahead
+                 : a.jump - b.jump;                 // else nearest the tour
+    });
+
+    // Survival mode: walking the tour from where the head is now could not be
+    // proven safe either way round.
+    if (plan === 0) {
+      // Before falling back on guesswork — does stepping sideways first put us
+      // on a tour walk that *does* verify? A blocked tour successor doesn't
+      // mean every route out is blocked, and this answer is still exact.
+      const nat = sense();
+      for (const m of moves) {
+        const c = idx(m.nx, m.ny);
+        for (const s2 of (nat === 1 ? [1, -1] : [-1, 1])) {
+          if (healSafe(s2, c)) { aiSense = s2; dir = m.d; return; }
+        }
+      }
+
+      // Nothing verifies. Hug the tail — chasing it keeps the body compact and
+      // the free space in one piece — and look for a tour plan again next
+      // move, once the tail has shuffled along and opened things up.
+      let best = null;
+      for (const m of moves) {
+        m.res = survives(m.nx, m.ny);
+        if (!m.res.reachesTail) continue;
+        if (!best || m.res.tailDist < best.res.tailDist ||
+            (m.res.tailDist === best.res.tailDist && m.res.area > best.res.area)) best = m;
+      }
+      if (best) { dir = best.d; return; }
+      let widest = null;
+      for (const m of moves) {
+        if (!widest || m.res.area > widest.res.area) widest = m;
+      }
+      if (widest) dir = widest.d;    // tail out of sight: take the roomiest square
+      return;
+    }
+
+    let fallback = null, fallbackArea = -1;
+    for (const m of moves) {
+      const res = survives(m.nx, m.ny);
+      if (res.reachesTail) { dir = m.d; return; }   // safe: take it
+      if (res.area > fallbackArea) { fallbackArea = res.area; fallback = m; }
+    }
+    // Nothing keeps the tail in sight (only happens on a board that is nearly
+    // all snake) — head for the roomiest space left.
+    if (fallback) dir = fallback.d;
   }
 
   // =================================================================
   // Simulation — one grid move
   // =================================================================
   function step() {
+    if (ai) steer();
+
     // Apply at most one buffered turn per move, so a fast double-tap
     // (e.g. up then left) reads as two turns rather than being swallowed.
     while (queued.length) {
@@ -454,7 +770,9 @@
     if (eating) {
       score++;
       scoreEl.textContent = score;
-      if (score > hiscore) {
+      // An autopilot run always fills the board, so keep it out of the
+      // human high score.
+      if (!aiUsed && score > hiscore) {
         hiscore = score;
         hiscoreEl.textContent = hiscore;
         try { localStorage.setItem(HISCORE_KEY, String(hiscore)); } catch (_) {}
@@ -470,10 +788,18 @@
     state = STATE.OVER;
     deathFlash = 10;
     finalEl.textContent = score;
-    overNote.innerHTML = (score > 0 && score >= hiscore)
-      ? '<span style="color:var(--amber)">NEW HIGH SCORE!</span>'
-      : "HI " + hiscore;
+    overNote.innerHTML = aiUsed
+      ? "AI ASSISTED"
+      : (score > 0 && score >= hiscore)
+        ? '<span style="color:var(--amber)">NEW HIGH SCORE!</span>'
+        : "HI " + hiscore;
     overScreen.hidden = false;
+  }
+
+  function winGame() {
+    state = STATE.WIN;
+    winScoreEl.textContent = score;
+    winScreen.hidden = false;
   }
 
   // =================================================================
@@ -506,12 +832,12 @@
       ctx.fillRect(food.x * cell + o, food.y * cell + o, c, c);
     }
 
-    // Snake: head bright, body fading toward the tail.
+    // Snake: head bright, body fading toward the tail. Magenta on autopilot.
     const gap = cell >= 12 ? 1 : 0;
     for (let i = snake.length - 1; i >= 0; i--) {
       const s = snake[i];
       const t = snake.length > 1 ? i / (snake.length - 1) : 0;   // 0 head -> 1 tail
-      ctx.fillStyle = i === 0 ? "#c9ffb8" : shade(t);
+      ctx.fillStyle = i === 0 ? (ai ? "#ffd9f1" : "#c9ffb8") : shade(t);
       ctx.fillRect(s.x * cell + gap, s.y * cell + gap, cell - gap * 2, cell - gap * 2);
     }
 
@@ -543,10 +869,57 @@
 
   /** Body colour: bright phosphor green at the head, dim at the tail. */
   function shade(t) {
+    if (ai) {   // autopilot: magenta body, so it reads as "not you"
+      const r = Math.round(255 + (120 - 255) * t);
+      const g = Math.round(47  + (18  - 47)  * t);
+      const b = Math.round(185 + (90  - 185) * t);
+      return "rgb(" + r + "," + g + "," + b + ")";
+    }
     const r = Math.round(57  + (20  - 57)  * t);
     const g = Math.round(255 + (110 - 255) * t);
     const b = Math.round(20  + (16  - 20)  * t);
     return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  // =================================================================
+  // Sizing — keep the grid pixel-perfect on any screen / DPR
+  // =================================================================
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const bs  = getComputedStyle(document.body);
+    const row = bs.flexDirection === "row";   // landscape layout
+
+    // Measure the real chrome (HUD, controls, footer + flex gaps) so the board
+    // can claim every remaining pixel instead of guessing.
+    const gap  = parseFloat(bs.rowGap) || 0;
+    const padY = parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom);
+    const padX = parseFloat(bs.paddingLeft) + parseFloat(bs.paddingRight);
+
+    // In portrait the chrome stacks above/below the board; in the landscape
+    // row layout it sits beside it. Measure whichever axis it eats into.
+    let used = 0, siblings = 0;
+    for (const el of [header, controls, footer]) {
+      const box = row ? el.offsetWidth : el.offsetHeight;   // 0 when display:none
+      if (box > 0) { used += box; siblings++; }
+    }
+    const eaten = used + gap * siblings;
+
+    const maxW    = Math.min(window.innerWidth  - padX - (row ? eaten : 0), 520);
+    const maxH    = window.innerHeight - padY - (row ? 0 : eaten);
+    const cssSize = Math.max(150, Math.min(maxW, maxH));
+
+    // Floor the cell size in device pixels so every cell is identical and
+    // lands on whole pixels — that is what keeps the look crisp and blocky.
+    cell = Math.max(4, Math.floor((cssSize * dpr) / GRID));
+    const px = cell * GRID;
+
+    canvas.width  = px;
+    canvas.height = px;
+    canvas.style.width  = (px / dpr) + "px";
+    canvas.style.height = (px / dpr) + "px";
+
+    ctx.imageSmoothingEnabled = false;
+    draw();
   }
 
   // =================================================================
@@ -560,11 +933,11 @@
     if (state === STATE.PLAYING) {
       acc += dt;
       const ms = stepMs();
-      // Guard against a huge catch-up burst if the loop was starved.
-      let budget = 4;
+      // Guard against a huge catch-up burst if the loop was starved. The cap
+      // is generous because MAX speed needs several moves per frame.
+      let budget = 40;
       while (acc >= ms && budget-- > 0 && state === STATE.PLAYING) {
         acc -= ms;
-        tickAt = now;
         step();
       }
       if (acc > ms) acc = 0;
@@ -577,11 +950,14 @@
   // =================================================================
   // Flow control
   // =================================================================
-  function startGame() {
+  function startGame(withAI) {
+    if (withAI !== undefined) setAI(withAI);
     reset();
     startScreen.hidden = true;
     overScreen.hidden  = true;
+    winScreen.hidden   = true;
     pauseScreen.hidden = true;
+    pauseBtn.textContent = "PAUSE";
     state = STATE.PLAYING;
     lastFrame = performance.now();
   }
@@ -595,15 +971,30 @@
       pauseScreen.hidden = true;
       lastFrame = performance.now();
     }
+    pauseBtn.textContent = state === STATE.PAUSED ? "RESUME" : "PAUSE";
+  }
+
+  function setAI(on) {
+    ai = !!on;
+    if (ai) { aiUsed = true; queued.length = 0; aiSense = 0; }  // drop pending human turns
+    aiBtn.textContent = ai ? "AI: ON" : "AI: OFF";
+    aiBtn.classList.toggle("on", ai);
+    aiBtn.setAttribute("aria-pressed", String(ai));
+  }
+
+  function setSpeed(i) {
+    speedIdx = ((i % SPEEDS.length) + SPEEDS.length) % SPEEDS.length;
+    speedBtn.innerHTML = "SPEED " + SPEEDS[speedIdx].label;
   }
 
   /** Queue a turn (max two deep, and never a straight reversal). */
   function turn(name) {
     if (state !== STATE.PLAYING) return;
+    if (ai) setAI(false);              // steering manually takes back control
     const d = DIRS[name];
     if (!d) return;
     const last = queued.length ? queued[queued.length - 1] : dir;
-    if (d.axis === last.axis) return;    // same axis = reversal or no-op
+    if (d.axis === last.axis) return;  // same axis = reversal or no-op
     if (queued.length < 2) queued.push(d);
   }
 
@@ -620,34 +1011,35 @@
     const name = KEYS[e.key];
     if (name) {
       e.preventDefault();                       // stop arrow-key page scroll
-      if (state === STATE.START) startGame();
+      if (state === STATE.START) startGame(false);
       else if (state === STATE.PAUSED) togglePause();
       turn(name);
       return;
     }
 
-    if (e.key === " " || e.key === "Spacebar") {
-      e.preventDefault();
-      if (state === STATE.START)      startGame();
-      else if (state === STATE.OVER)  startGame();
-      else                            togglePause();
-    } else if (e.key === "Enter") {
-      if (state === STATE.START || state === STATE.OVER) startGame();
+    switch (e.key) {
+      case " ":
+      case "Spacebar":
+        e.preventDefault();
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        if (state === STATE.START || state === STATE.OVER || state === STATE.WIN) startGame();
+        else togglePause();
+        break;
+      case "p": case "P":
+        togglePause();
+        break;
+      case "Enter":
+        if (state === STATE.START || state === STATE.OVER || state === STATE.WIN) startGame();
+        break;
+      case "i": case "I":
+        setAI(!ai);
+        if (state === STATE.START) startGame();
+        break;
+      case "f": case "F":
+        setSpeed(speedIdx + 1);
+        break;
     }
   }, { passive: false });
-
-  // =================================================================
-  // Input — D-pad. pointerdown fires ahead of click, which keeps the
-  // controls feeling immediate on touch.
-  // =================================================================
-  dpad.addEventListener("pointerdown", (e) => {
-    const btn = e.target.closest("button[data-dir]");
-    if (!btn) return;
-    e.preventDefault();
-    if (state === STATE.PAUSED) togglePause();
-    if (state === STATE.START)  startGame();
-    turn(btn.dataset.dir);
-  });
 
   // =================================================================
   // Input — swipe anywhere on the board
@@ -681,7 +1073,7 @@
   // Tap the board to start, or to unpause.
   stage.addEventListener("pointerup", (e) => {
     if (e.target.tagName === "BUTTON") return;
-    if (state === STATE.START)       startGame();
+    if (state === STATE.START)       startGame(false);
     else if (state === STATE.PAUSED) togglePause();
   });
 
@@ -692,8 +1084,29 @@
   // =================================================================
   // Buttons, lifecycle, boot
   // =================================================================
-  document.getElementById("startBtn").addEventListener("click", startGame);
-  document.getElementById("againBtn").addEventListener("click", startGame);
+  document.getElementById("startBtn").addEventListener("click", () => startGame(false));
+  document.getElementById("againBtn").addEventListener("click", () => startGame());
+  document.getElementById("winBtn").addEventListener("click",   () => startGame());
+
+  // Watch the AI play a fresh game — bumped to 4x, it is patient at 1x.
+  document.getElementById("demoBtn").addEventListener("click", () => {
+    if (speedIdx === 0) setSpeed(2);
+    startGame(true);
+  });
+
+  aiBtn.addEventListener("click", () => {
+    setAI(!ai);
+    aiBtn.blur();                                // keep space bar on pause duty
+    if (state === STATE.START) startGame();
+  });
+
+  speedBtn.addEventListener("click", () => { setSpeed(speedIdx + 1); speedBtn.blur(); });
+
+  pauseBtn.addEventListener("click", () => {
+    if (state === STATE.START) startGame(false);
+    else togglePause();
+    pauseBtn.blur();
+  });
 
   // Auto-pause when the tab or app goes to the background.
   document.addEventListener("visibilitychange", () => {
@@ -705,6 +1118,42 @@
   // The pixel font changes the HUD's height once it arrives — re-measure then.
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);
 
+  // Debug hook: lets a headless harness drive the simulation without waiting
+  // on requestAnimationFrame (used to verify the autopilot never dies).
+  window.SnakeDebug = {
+    step, startGame, setAI, reset,
+    get state()  { return state; },
+    get score()  { return score; },
+    get length() { return snake.length; },
+    get aligned(){ return aligned(); },
+    /** Legal moves out of the current head position. 0 = already lost. */
+    get exits() {
+      let n = 0;
+      for (const d of DIR_LIST) {
+        if (d.x === -dir.x && d.y === -dir.y) continue;
+        const nx = snake[0].x + d.x, ny = snake[0].y + d.y;
+        if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) continue;
+        if (occupied.has(key(nx, ny))) continue;
+        n++;
+      }
+      return n;
+    },
+    /** Biggest space any legal move can reach. Below body length = trapped. */
+    get room() {
+      let best = 0;
+      for (const d of DIR_LIST) {
+        if (d.x === -dir.x && d.y === -dir.y) continue;
+        const nx = snake[0].x + d.x, ny = snake[0].y + d.y;
+        if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) continue;
+        if (occupied.has(key(nx, ny))) continue;
+        best = Math.max(best, survives(nx, ny).area);
+      }
+      return best;
+    },
+  };
+
+  setSpeed(0);
+  setAI(false);
   reset();
   resize();
   lastFrame = performance.now();
