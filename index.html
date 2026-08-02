@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit + user-scalable=no keeps the board steady on phones -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#050806">
+<meta name="description" content="A retro CRT-styled Snake game. Keyboard, swipe and D-pad controls.">
+<title>NEON SNAKE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  /* ---------------------------------------------------------------
+     Palette: phosphor green on black, with a magenta accent.
+     --------------------------------------------------------------- */
+  :root {
+    --bg:        #050806;
+    --grid:      #0d1a10;
+    --green:     #39ff14;
+    --green-dim: #1f7a11;
+    --magenta:   #ff2fb9;
+    --amber:     #ffcc33;
+    --font: "Press Start 2P", "Courier New", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--green);
+    font-family: var(--font);
+    /* No page scroll or pinch-zoom while playing. */
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(6px, 1.6vh, 14px);
+    padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+    /* Faint CRT vignette behind everything. */
+    background:
+      radial-gradient(ellipse at center, #0b140d 0%, var(--bg) 70%, #000 100%);
+  }
+
+  /* Scanlines + screen glow, drawn over the whole viewport. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 50;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0)   0px,
+      rgba(0, 0, 0, 0)   2px,
+      rgba(0, 0, 0, .28) 3px,
+      rgba(0, 0, 0, .28) 4px
+    );
+    mix-blend-mode: multiply;
+  }
+
+  /* ------------------------------ HUD ------------------------------ */
+  header {
+    width: 100%;
+    max-width: 520px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: clamp(8px, 2.6vw, 12px);
+    letter-spacing: 1px;
+  }
+
+  .title {
+    color: var(--magenta);
+    text-shadow: 0 0 6px var(--magenta), 0 0 18px rgba(255, 47, 185, .55);
+  }
+
+  .scores { display: flex; gap: clamp(8px, 3vw, 18px); }
+  .scores b { font-weight: normal; color: var(--amber); text-shadow: 0 0 8px rgba(255, 204, 51, .6); }
+  .label { color: var(--green-dim); }
+
+  /* ---------------------------- Playfield --------------------------- */
+  #stage {
+    position: relative;
+    line-height: 0; /* kill the inline-canvas baseline gap */
+  }
+
+  canvas {
+    display: block;
+    background: #000;
+    border: 2px solid var(--green-dim);
+    box-shadow:
+      0 0 0 2px #000,
+      0 0 14px rgba(57, 255, 20, .35),
+      inset 0 0 40px rgba(57, 255, 20, .07);
+    image-rendering: pixelated;      /* keep it blocky when scaled */
+    image-rendering: crisp-edges;
+    touch-action: none;
+  }
+
+  /* Overlay screens (start / game over / paused) sit on top of the canvas. */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(10px, 2.4vh, 20px);
+    padding: 18px;
+    text-align: center;
+    line-height: 1.9;
+    background: rgba(0, 8, 2, .86);
+    font-size: clamp(7px, 2.3vw, 11px);
+  }
+  .overlay[hidden] { display: none; }
+  /* Nearly opaque before the first game; the game-over screen stays a little
+     translucent so you can still see where you crashed. */
+  #startScreen { background: rgba(0, 8, 2, .97); }
+
+  .overlay h1 {
+    margin: 0;
+    font-size: clamp(14px, 5.6vw, 26px);
+    color: var(--green);
+    text-shadow: 0 0 8px var(--green), 0 0 24px rgba(57, 255, 20, .5);
+    animation: flicker 4s infinite steps(1);
+  }
+  .overlay h2 {
+    margin: 0;
+    font-size: clamp(12px, 4.6vw, 20px);
+    color: var(--magenta);
+    text-shadow: 0 0 8px var(--magenta);
+  }
+  .overlay p { margin: 0; color: var(--green-dim); }
+  .overlay .keys { color: var(--green); }
+  .big { font-size: clamp(11px, 4vw, 16px); color: var(--amber); text-shadow: 0 0 10px rgba(255, 204, 51, .6); }
+
+  @keyframes flicker {
+    0%, 96%, 100% { opacity: 1; }
+    97%           { opacity: .55; }
+    98%           { opacity: 1; }
+    99%           { opacity: .7; }
+  }
+
+  .blink { animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ----------------------------- Buttons ---------------------------- */
+  button {
+    font: inherit;
+    font-size: clamp(8px, 2.8vw, 12px);
+    color: var(--bg);
+    background: var(--green);
+    border: none;
+    padding: 12px 18px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    box-shadow: 0 0 12px rgba(57, 255, 20, .5), 4px 4px 0 var(--green-dim);
+    touch-action: manipulation;
+  }
+  button:active { transform: translate(2px, 2px); box-shadow: 0 0 12px rgba(57, 255, 20, .5), 2px 2px 0 var(--green-dim); }
+  button:focus-visible { outline: 2px dashed var(--amber); outline-offset: 4px; }
+
+  /* ------------------------------ D-pad ----------------------------- */
+  #dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 6px;
+    width: min(46vw, 190px);
+    aspect-ratio: 1;
+    touch-action: none;
+  }
+  /* Only worth showing on touch devices; desktop gets the arrow keys. */
+  @media (hover: hover) and (pointer: fine) { #dpad { display: none; } }
+
+  #dpad button {
+    padding: 0;
+    font-size: clamp(12px, 4vw, 18px);
+    color: var(--green);
+    background: rgba(57, 255, 20, .07);
+    border: 2px solid var(--green-dim);
+    box-shadow: inset 0 0 12px rgba(57, 255, 20, .12);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #dpad button:active {
+    transform: none;
+    background: rgba(57, 255, 20, .3);
+    color: #000;
+  }
+  .pad-up    { grid-area: 1 / 2; }
+  .pad-left  { grid-area: 2 / 1; }
+  .pad-mid   { grid-area: 2 / 2; border: none !important; box-shadow: none !important; background: none !important; }
+  .pad-right { grid-area: 2 / 3; }
+  .pad-down  { grid-area: 3 / 2; }
+
+  footer {
+    font-size: clamp(6px, 2vw, 9px);
+    color: var(--green-dim);
+    letter-spacing: 1px;
+  }
+
+  /* Landscape phones: keep the board visible, shrink the chrome. */
+  @media (max-height: 480px) and (orientation: landscape) {
+    body { flex-direction: row; flex-wrap: wrap; }
+    header { max-width: none; width: auto; flex-direction: column; align-items: flex-start; gap: 8px; }
+    footer { display: none; }
+    #dpad { width: min(28vw, 150px); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .overlay h1, .blink { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="title">NEON SNAKE</span>
+  <span class="scores">
+    <span><span class="label">SCORE</span> <b id="score">0</b></span>
+    <span><span class="label">HI</span> <b id="hiscore">0</b></span>
+  </span>
+</header>
+
+<div id="stage">
+  <canvas id="board" aria-label="Snake game board"></canvas>
+
+  <!-- Start screen -->
+  <div class="overlay" id="startScreen">
+    <h1>NEON<br>SNAKE</h1>
+    <p>
+      EAT THE <span style="color:var(--magenta)">PELLETS</span><br>
+      DON'T HIT THE WALLS<br>
+      DON'T EAT YOURSELF
+    </p>
+    <p class="keys">
+      ARROWS / WASD<br>
+      SWIPE OR D-PAD<br>
+      SPACE = PAUSE
+    </p>
+    <button id="startBtn">PRESS START</button>
+  </div>
+
+  <!-- Game over screen -->
+  <div class="overlay" id="overScreen" hidden>
+    <h2>GAME OVER</h2>
+    <p class="big">SCORE <span id="finalScore">0</span></p>
+    <p id="overNote">&nbsp;</p>
+    <button id="againBtn">PLAY AGAIN</button>
+  </div>
+
+  <!-- Pause screen -->
+  <div class="overlay" id="pauseScreen" hidden>
+    <h2>PAUSED</h2>
+    <p class="blink">TAP OR PRESS SPACE</p>
+  </div>
+</div>
+
+<!-- On-screen D-pad (touch devices) -->
+<div id="dpad" role="group" aria-label="Direction pad">
+  <button class="pad-up"    data-dir="up"    aria-label="Up">▲</button>
+  <button class="pad-left"  data-dir="left"  aria-label="Left">◀</button>
+  <span   class="pad-mid"></span>
+  <button class="pad-right" data-dir="right" aria-label="Right">▶</button>
+  <button class="pad-down"  data-dir="down"  aria-label="Down">▼</button>
+</div>
+
+<footer>GRID-LOCKED · 60FPS · SINGLE FILE</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  // =================================================================
+  // Config
+  // =================================================================
+  const GRID       = 21;   // cells per side (odd, so the snake starts centred)
+  const START_LEN  = 4;    // initial snake length
+  const BASE_STEP  = 140;  // ms per move at score 0
+  const MIN_STEP   = 62;   // fastest the snake will ever go
+  const RAMP       = 3.2;  // ms shaved off the step per pellet eaten
+  const HISCORE_KEY = "neon-snake-hiscore";
+
+  // Grid directions. `axis` blocks 180-degree turns into your own neck.
+  const DIRS = {
+    up:    { x:  0, y: -1, axis: "y" },
+    down:  { x:  0, y:  1, axis: "y" },
+    left:  { x: -1, y:  0, axis: "x" },
+    right: { x:  1, y:  0, axis: "x" },
+  };
+
+  // =================================================================
+  // DOM
+  // =================================================================
+  const canvas      = document.getElementById("board");
+  const ctx         = canvas.getContext("2d", { alpha: false });
+  const stage       = document.getElementById("stage");
+  const dpad        = document.getElementById("dpad");
+  const header      = document.querySelector("header");
+  const footer      = document.querySelector("footer");
+  const scoreEl     = document.getElementById("score");
+  const hiscoreEl   = document.getElementById("hiscore");
+  const finalEl     = document.getElementById("finalScore");
+  const overNote    = document.getElementById("overNote");
+  const startScreen = document.getElementById("startScreen");
+  const overScreen  = document.getElementById("overScreen");
+  const pauseScreen = document.getElementById("pauseScreen");
+
+  // =================================================================
+  // State
+  // =================================================================
+  const STATE = { START: "start", PLAYING: "playing", PAUSED: "paused", OVER: "over" };
+
+  let state    = STATE.START;
+  let snake    = [];      // [{x, y}, ...] head first
+  let occupied = null;    // Set of "x,y" keys for O(1) self-collision checks
+  let dir      = DIRS.right;
+  let queued   = [];      // buffered turns, applied one per tick
+  let food     = { x: 0, y: 0 };
+  let score    = 0;
+  let hiscore  = 0;
+  let cell     = 16;      // device pixels per cell (set by resize)
+
+  let acc       = 0;      // accumulated ms since the last move
+  let lastFrame = 0;
+  let tickAt    = 0;      // timestamp of the last move, for interpolating effects
+  let deathFlash = 0;     // frames of red flash left after dying
+
+  const key = (x, y) => x + "," + y;
+
+  try { hiscore = parseInt(localStorage.getItem(HISCORE_KEY), 10) || 0; } catch (_) { hiscore = 0; }
+  hiscoreEl.textContent = hiscore;
+
+  // =================================================================
+  // Sizing — keep the grid pixel-perfect on any screen / DPR
+  // =================================================================
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const bs  = getComputedStyle(document.body);
+    const row = bs.flexDirection === "row";   // landscape layout
+
+    // Measure the real chrome (HUD, D-pad, footer + flex gaps) so the board
+    // can claim every remaining pixel instead of guessing.
+    const gap  = parseFloat(bs.rowGap) || 0;
+    const padY = parseFloat(bs.paddingTop) + parseFloat(bs.paddingBottom);
+    const padX = parseFloat(bs.paddingLeft) + parseFloat(bs.paddingRight);
+
+    // In portrait the chrome stacks above/below the board; in the landscape
+    // row layout it sits beside it. Measure whichever axis it eats into.
+    let used = 0, siblings = 0;
+    for (const el of [header, dpad, footer]) {
+      const box = row ? el.offsetWidth : el.offsetHeight;   // 0 when display:none
+      if (box > 0) { used += box; siblings++; }
+    }
+    const eaten = used + gap * siblings;
+
+    const maxW    = Math.min(window.innerWidth  - padX - (row ? eaten : 0), 520);
+    const maxH    = window.innerHeight - padY - (row ? 0 : eaten);
+    const cssSize = Math.max(150, Math.min(maxW, maxH));
+
+    // Floor the cell size in device pixels so every cell is identical and
+    // lands on whole pixels — that is what keeps the look crisp and blocky.
+    cell = Math.max(4, Math.floor((cssSize * dpr) / GRID));
+    const px = cell * GRID;
+
+    canvas.width  = px;
+    canvas.height = px;
+    canvas.style.width  = (px / dpr) + "px";
+    canvas.style.height = (px / dpr) + "px";
+
+    ctx.imageSmoothingEnabled = false;
+    draw();
+  }
+
+  // =================================================================
+  // Game setup
+  // =================================================================
+  function reset() {
+    const mid = (GRID - 1) >> 1;
+    snake = [];
+    for (let i = 0; i < START_LEN; i++) snake.push({ x: mid - i, y: mid });
+
+    occupied = new Set(snake.map(s => key(s.x, s.y)));
+    dir      = DIRS.right;
+    queued   = [];
+    score    = 0;
+    acc      = 0;
+    deathFlash = 0;
+    scoreEl.textContent = "0";
+    placeFood();
+  }
+
+  /** Drop a pellet on a random cell the snake is not currently occupying. */
+  function placeFood() {
+    const free = [];
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        if (!occupied.has(key(x, y))) free.push({ x, y });
+      }
+    }
+    if (!free.length) return;                     // board full: a perfect game
+    food = free[(Math.random() * free.length) | 0];
+  }
+
+  /** Move interval in ms — shortens as the score climbs. */
+  function stepMs() {
+    return Math.max(MIN_STEP, BASE_STEP - score * RAMP);
+  }
+
+  // =================================================================
+  // Simulation — one grid move
+  // =================================================================
+  function step() {
+    // Apply at most one buffered turn per move, so a fast double-tap
+    // (e.g. up then left) reads as two turns rather than being swallowed.
+    while (queued.length) {
+      const next = queued.shift();
+      if (next.axis !== dir.axis) { dir = next; break; }
+    }
+
+    const head = snake[0];
+    const nx = head.x + dir.x;
+    const ny = head.y + dir.y;
+
+    // Walls.
+    if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) return gameOver();
+
+    // Self-collision. The tail cell is about to move away, so hitting it is
+    // legal — unless we're growing into it this same tick.
+    const tail = snake[snake.length - 1];
+    const eating = (nx === food.x && ny === food.y);
+    const hitsSelf = occupied.has(key(nx, ny)) && !(!eating && nx === tail.x && ny === tail.y);
+    if (hitsSelf) return gameOver();
+
+    snake.unshift({ x: nx, y: ny });
+    occupied.add(key(nx, ny));
+
+    if (eating) {
+      score++;
+      scoreEl.textContent = score;
+      if (score > hiscore) {
+        hiscore = score;
+        hiscoreEl.textContent = hiscore;
+        try { localStorage.setItem(HISCORE_KEY, String(hiscore)); } catch (_) {}
+      }
+      placeFood();
+    } else {
+      const gone = snake.pop();
+      occupied.delete(key(gone.x, gone.y));
+    }
+  }
+
+  function gameOver() {
+    state = STATE.OVER;
+    deathFlash = 10;
+    finalEl.textContent = score;
+    overNote.innerHTML = (score > 0 && score >= hiscore)
+      ? '<span style="color:var(--amber)">NEW HIGH SCORE!</span>'
+      : "HI " + hiscore;
+    overScreen.hidden = false;
+  }
+
+  // =================================================================
+  // Rendering
+  // =================================================================
+  function draw() {
+    const px = GRID * cell;
+
+    // Background + grid lines.
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, px, px);
+
+    ctx.fillStyle = "#0d1a10";
+    for (let i = 1; i < GRID; i++) {
+      ctx.fillRect(i * cell, 0, 1, px);
+      ctx.fillRect(0, i * cell, px, 1);
+    }
+
+    // Pellet: a pulsing magenta block with a lighter core.
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 180);
+    const inset = Math.max(1, Math.round(cell * 0.14));
+    ctx.fillStyle = "#ff2fb9";
+    ctx.globalAlpha = 0.55 + 0.45 * pulse;
+    ctx.fillRect(food.x * cell + inset, food.y * cell + inset, cell - inset * 2, cell - inset * 2);
+    ctx.globalAlpha = 1;
+    if (cell >= 10) {
+      const c = Math.max(2, Math.round(cell * 0.28));
+      const o = Math.round((cell - c) / 2);
+      ctx.fillStyle = "#ffd9f1";
+      ctx.fillRect(food.x * cell + o, food.y * cell + o, c, c);
+    }
+
+    // Snake: head bright, body fading toward the tail.
+    const gap = cell >= 12 ? 1 : 0;
+    for (let i = snake.length - 1; i >= 0; i--) {
+      const s = snake[i];
+      const t = snake.length > 1 ? i / (snake.length - 1) : 0;   // 0 head -> 1 tail
+      ctx.fillStyle = i === 0 ? "#c9ffb8" : shade(t);
+      ctx.fillRect(s.x * cell + gap, s.y * cell + gap, cell - gap * 2, cell - gap * 2);
+    }
+
+    // Eyes on the head, once cells are big enough to see them.
+    if (cell >= 12) {
+      const h = snake[0];
+      const e = Math.max(2, Math.round(cell * 0.18));
+      const hx = h.x * cell, hy = h.y * cell;
+      const along = Math.round(cell * 0.58), across = Math.round(cell * 0.22);
+      ctx.fillStyle = "#04120a";
+      if (dir.axis === "x") {
+        const ex = dir.x > 0 ? hx + along : hx + cell - along - e;
+        ctx.fillRect(ex, hy + across, e, e);
+        ctx.fillRect(ex, hy + cell - across - e, e, e);
+      } else {
+        const ey = dir.y > 0 ? hy + along : hy + cell - along - e;
+        ctx.fillRect(hx + across, ey, e, e);
+        ctx.fillRect(hx + cell - across - e, ey, e, e);
+      }
+    }
+
+    // Red wash on death.
+    if (deathFlash > 0) {
+      ctx.fillStyle = "rgba(255, 40, 40, " + (deathFlash / 22) + ")";
+      ctx.fillRect(0, 0, px, px);
+      deathFlash--;
+    }
+  }
+
+  /** Body colour: bright phosphor green at the head, dim at the tail. */
+  function shade(t) {
+    const r = Math.round(57  + (20  - 57)  * t);
+    const g = Math.round(255 + (110 - 255) * t);
+    const b = Math.round(20  + (16  - 20)  * t);
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  // =================================================================
+  // Main loop — rAF for smooth painting, a fixed accumulator for movement
+  // so the snake stays strictly grid-locked regardless of frame rate.
+  // =================================================================
+  function frame(now) {
+    const dt = Math.min(now - lastFrame, 100);   // clamp after tab switches
+    lastFrame = now;
+
+    if (state === STATE.PLAYING) {
+      acc += dt;
+      const ms = stepMs();
+      // Guard against a huge catch-up burst if the loop was starved.
+      let budget = 4;
+      while (acc >= ms && budget-- > 0 && state === STATE.PLAYING) {
+        acc -= ms;
+        tickAt = now;
+        step();
+      }
+      if (acc > ms) acc = 0;
+    }
+
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // =================================================================
+  // Flow control
+  // =================================================================
+  function startGame() {
+    reset();
+    startScreen.hidden = true;
+    overScreen.hidden  = true;
+    pauseScreen.hidden = true;
+    state = STATE.PLAYING;
+    lastFrame = performance.now();
+  }
+
+  function togglePause() {
+    if (state === STATE.PLAYING) {
+      state = STATE.PAUSED;
+      pauseScreen.hidden = false;
+    } else if (state === STATE.PAUSED) {
+      state = STATE.PLAYING;
+      pauseScreen.hidden = true;
+      lastFrame = performance.now();
+    }
+  }
+
+  /** Queue a turn (max two deep, and never a straight reversal). */
+  function turn(name) {
+    if (state !== STATE.PLAYING) return;
+    const d = DIRS[name];
+    if (!d) return;
+    const last = queued.length ? queued[queued.length - 1] : dir;
+    if (d.axis === last.axis) return;    // same axis = reversal or no-op
+    if (queued.length < 2) queued.push(d);
+  }
+
+  // =================================================================
+  // Input — keyboard
+  // =================================================================
+  const KEYS = {
+    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+    w: "up", s: "down", a: "left", d: "right",
+    W: "up", S: "down", A: "left", D: "right",
+  };
+
+  window.addEventListener("keydown", (e) => {
+    const name = KEYS[e.key];
+    if (name) {
+      e.preventDefault();                       // stop arrow-key page scroll
+      if (state === STATE.START) startGame();
+      else if (state === STATE.PAUSED) togglePause();
+      turn(name);
+      return;
+    }
+
+    if (e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      if (state === STATE.START)      startGame();
+      else if (state === STATE.OVER)  startGame();
+      else                            togglePause();
+    } else if (e.key === "Enter") {
+      if (state === STATE.START || state === STATE.OVER) startGame();
+    }
+  }, { passive: false });
+
+  // =================================================================
+  // Input — D-pad. pointerdown fires ahead of click, which keeps the
+  // controls feeling immediate on touch.
+  // =================================================================
+  dpad.addEventListener("pointerdown", (e) => {
+    const btn = e.target.closest("button[data-dir]");
+    if (!btn) return;
+    e.preventDefault();
+    if (state === STATE.PAUSED) togglePause();
+    if (state === STATE.START)  startGame();
+    turn(btn.dataset.dir);
+  });
+
+  // =================================================================
+  // Input — swipe anywhere on the board
+  // =================================================================
+  const SWIPE_MIN = 24;   // px before a drag counts as a swipe
+  let sx = 0, sy = 0, swiping = false;
+
+  stage.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    swiping = true;
+  }, { passive: true });
+
+  stage.addEventListener("touchmove", (e) => {
+    e.preventDefault();                          // no rubber-band scrolling
+    if (!swiping) return;
+    const dx = e.touches[0].clientX - sx;
+    const dy = e.touches[0].clientY - sy;
+    if (Math.abs(dx) < SWIPE_MIN && Math.abs(dy) < SWIPE_MIN) return;
+
+    turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left")
+                                     : (dy > 0 ? "down"  : "up"));
+    // Re-anchor so a long drag can chain several turns.
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  }, { passive: false });
+
+  stage.addEventListener("touchend", () => { swiping = false; }, { passive: true });
+
+  // Tap the board to start, or to unpause.
+  stage.addEventListener("pointerup", (e) => {
+    if (e.target.tagName === "BUTTON") return;
+    if (state === STATE.START)       startGame();
+    else if (state === STATE.PAUSED) togglePause();
+  });
+
+  // Belt and braces: block any residual pinch-zoom / double-tap zoom.
+  document.addEventListener("gesturestart", (e) => e.preventDefault());
+  document.addEventListener("dblclick", (e) => e.preventDefault());
+
+  // =================================================================
+  // Buttons, lifecycle, boot
+  // =================================================================
+  document.getElementById("startBtn").addEventListener("click", startGame);
+  document.getElementById("againBtn").addEventListener("click", startGame);
+
+  // Auto-pause when the tab or app goes to the background.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && state === STATE.PLAYING) togglePause();
+  });
+
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", () => setTimeout(resize, 120));
+  // The pixel font changes the HUD's height once it arrives — re-measure then.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);
+
+  reset();
+  resize();
+  lastFrame = performance.now();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
