@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#07060f">
+<meta name="description" content="A Geometry Dash style one-button rhythm platformer with three hand-tuned levels.">
+<title>VECTOR RUSH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:    #07060f;
+    --ink:   #e8e6ff;
+    --dim:   #6f6a9c;
+    --good:  #3dffa2;
+    --warn:  #ffcc33;
+    --bad:   #ff3d6e;
+    --font:  "Press Start 2P", "Courier New", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    overflow: hidden;
+    touch-action: none;                /* no scroll or pinch while playing */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  #app {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+
+  /* ------------------------------- HUD ------------------------------- */
+  #hud {
+    position: absolute;
+    inset: 0 0 auto 0;
+    padding: max(10px, env(safe-area-inset-top)) 62px 0 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    pointer-events: none;
+    font-size: clamp(7px, 2.1vw, 10px);
+    letter-spacing: 1px;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, .8);
+  }
+  #hud.hide { display: none; }
+
+  .bar {
+    position: relative;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, .35);
+    background: rgba(0, 0, 0, .45);
+    overflow: hidden;
+  }
+  .bar i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0%;
+    background: var(--good);
+    box-shadow: 0 0 12px var(--good);
+    transition: width .08s linear;
+  }
+  .hudrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .hudrow .bar { flex: 1; }
+  #hudPct { min-width: 4ch; text-align: right; color: var(--good); }
+  .hudrow b { font-weight: normal; color: var(--warn); }
+
+  /* ----------------------------- Overlays ---------------------------- */
+  .screen {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: clamp(10px, 2.5vh, 22px);
+    padding: 20px;
+    text-align: center;
+    background: rgba(7, 6, 15, .93);
+    overflow-y: auto;
+  }
+  .screen[hidden] { display: none; }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(16px, 6vw, 34px);
+    letter-spacing: 2px;
+    background: linear-gradient(90deg, #3dffa2, #46e0ff, #b46bff, #ff3d6e);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 14px rgba(70, 224, 255, .45));
+  }
+  h2 { margin: 0; font-size: clamp(13px, 4.6vw, 22px); }
+  p  { margin: 0; font-size: clamp(7px, 2.3vw, 11px); line-height: 2; color: var(--dim); }
+  .tip { color: var(--ink); }
+
+  /* --------------------------- Level select -------------------------- */
+  #levels {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(460px, 100%);
+  }
+
+  .card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    border: 2px solid var(--edge, #46e0ff);
+    background: linear-gradient(90deg, rgba(255, 255, 255, .06), transparent);
+    color: var(--ink);
+    font: inherit;
+    font-size: clamp(8px, 2.4vw, 11px);
+    text-align: left;
+    cursor: pointer;
+    box-shadow: inset 0 0 24px rgba(255, 255, 255, .04);
+  }
+  .card:active { transform: translateY(2px); }
+  .card:focus-visible { outline: 2px dashed var(--warn); outline-offset: 3px; }
+  .card .num {
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    border: 2px solid var(--edge, #46e0ff);
+    color: var(--edge, #46e0ff);
+  }
+  .card .meta { display: flex; flex-direction: column; gap: 7px; }
+  .card .sub { font-size: clamp(6px, 1.9vw, 8px); color: var(--dim); letter-spacing: 1px; }
+  .card .pct { font-size: clamp(8px, 2.6vw, 12px); color: var(--good); }
+  .card .pct.done { color: var(--warn); }
+
+  /* ----------------------------- Buttons ----------------------------- */
+  button.btn {
+    font: inherit;
+    font-size: clamp(8px, 2.6vw, 11px);
+    letter-spacing: 1px;
+    color: #05040c;
+    background: var(--good);
+    border: none;
+    padding: 13px 20px;
+    cursor: pointer;
+    box-shadow: 0 4px 0 #1c8f5c;
+  }
+  button.btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #1c8f5c; }
+  button.btn.alt { color: var(--ink); background: transparent; border: 2px solid var(--dim); box-shadow: none; }
+  button.btn:focus-visible { outline: 2px dashed var(--warn); outline-offset: 3px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+
+  /* Small square pause control, top right, only while playing. */
+  #pauseBtn {
+    position: absolute;
+    top: max(10px, env(safe-area-inset-top));
+    right: 12px;
+    z-index: 15;
+    width: 40px; height: 40px;
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    color: var(--ink);
+    background: rgba(0, 0, 0, .45);
+    border: 2px solid rgba(255, 255, 255, .3);
+    cursor: pointer;
+  }
+  #pauseBtn.hide { display: none; }
+
+  .fine { font-size: clamp(6px, 1.9vw, 8px); color: var(--dim); line-height: 2.2; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar i { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hide">
+    <div class="hudrow">
+      <span id="hudName">—</span>
+      <span>ATTEMPT <b id="hudTries">1</b></span>
+    </div>
+    <div class="hudrow"><div class="bar"><i id="hudFill"></i></div><span id="hudPct">0%</span></div>
+  </div>
+
+  <button id="pauseBtn" class="hide" type="button" aria-label="Pause">II</button>
+
+  <!-- Menu / level select -->
+  <div class="screen" id="menuScreen">
+    <h1>VECTOR RUSH</h1>
+    <p>ONE BUTTON. HOLD TO KEEP JUMPING.<br>
+       <span class="tip">TAP / SPACE / CLICK</span></p>
+    <div id="levels"></div>
+    <p class="fine">YELLOW PADS BOUNCE YOU AUTOMATICALLY<br>
+       PINK ORBS ONLY FIRE IF YOU HOLD THROUGH THEM</p>
+  </div>
+
+  <!-- Pause -->
+  <div class="screen" id="pauseScreen" hidden>
+    <h2>PAUSED</h2>
+    <p id="pauseInfo">—</p>
+    <div class="row">
+      <button class="btn" id="resumeBtn" type="button">RESUME</button>
+      <button class="btn alt" id="retryBtn" type="button">RESTART</button>
+      <button class="btn alt" id="quitBtn" type="button">LEVELS</button>
+    </div>
+  </div>
+
+  <!-- Level complete -->
+  <div class="screen" id="winScreen" hidden>
+    <h2 style="color:var(--warn)">LEVEL COMPLETE</h2>
+    <p id="winInfo">—</p>
+    <div class="row">
+      <button class="btn" id="nextBtn" type="button">NEXT LEVEL</button>
+      <button class="btn alt" id="againBtn" type="button">REPLAY</button>
+      <button class="btn alt" id="menuBtn" type="button">LEVELS</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ===================================================================
+  // Physics constants. Units are blocks and seconds; a block is the
+  // cube's own size. Everything below is derived from one idea: a jump
+  // should clear two ground spikes but never three, which is what makes
+  // spike counting a real design language.
+  //
+  //   apex   = JUMP^2 / (2*GRAV)      = 2.42 blocks
+  //   airtime= 2*JUMP / GRAV          = 0.366 s
+  //   length = SPEED * airtime        = 3.73 blocks
+  // ===================================================================
+  const SPEED  = 10.2;    // blocks per second, constant and forward
+  const GRAV   = 145;     // blocks per second squared
+  const JUMP   = 26.5;    // launch speed off the ground
+  const ORB    = 26.5;    // launch speed from a ring
+  const PAD    = 39;      // launch speed off a pad (apex 5.2 blocks)
+  const DT     = 1 / 120; // fixed physics step — determinism matters here,
+                          // both for fairness and for the level solver
+
+  // Hitboxes. The cube's hazard box is inset and spikes are slim, the same
+  // forgiveness the genre relies on: near misses read as near misses.
+  const HAZ_IN   = 0.09;  // cube inset for spikes
+  const SPIKE_W  = 0.34;  // spike hazard half-width around the cell centre
+  const SPIKE_H  = 0.62;  // spike hazard height
+  const LAND_EPS = 0.06;  // how far above a surface still counts as landing
+
+  const SKY      = 7.5;   // blocks of headroom above the floor (a pad apex is 5.2)
+  const VIEW_MAX = 22;    // never show more than this many blocks across
+  const VIEW_MIN = 15;    // ...nor fewer, or there is no time to read what is coming
+  const BAND_AR  = 1.55;  // play band aspect; taller screens letterbox instead of
+                          // stretching, which is what wrecks the composition on a phone
+
+  // ===================================================================
+  // Level authoring
+  //
+  // A level is a list of steps walked left to right. A bare number is that
+  // many blocks of empty ground; everything else places geometry and
+  // advances the cursor past it.
+  //
+  //   ['sp', n]        n spikes on the ground
+  //   ['spOn', n, y]   n spikes standing on a surface at height y
+  //   ['blk', w, h]    solid block w wide and h tall, sitting on the ground
+  //   ['plat', w, y]   floating platform w wide whose top is at height y
+  //   ['stair', h]     staircase climbing to height h, one block per step
+  //   ['pad', y]       jump pad resting on a surface at height y
+  //   ['orb', y]       ring floating with its centre at height y
+  //
+  // A negative number rewinds the cursor, which is how a ring gets placed in
+  // the air above hazards that were already laid down.
+  // ===================================================================
+  function build(spec) {
+    const spikes = [], solids = [], pads = [], orbs = [];
+    let x = 0;
+    for (const s of spec) {
+      if (typeof s === "number") { x += s; continue; }
+      const k = s[0], a = s[1] !== undefined ? s[1] : 1, b = s[2] !== undefined ? s[2] : 0;
+      switch (k) {
+        case "sp":    for (let i = 0; i < a; i++) spikes.push({ x: x + i, y: 0 }); x += a; break;
+        case "spOn":  for (let i = 0; i < a; i++) spikes.push({ x: x + i, y: b }); x += a; break;
+        case "blk":   solids.push({ x, y: 0, w: a, h: b || 1 }); x += a; break;
+        case "plat":  solids.push({ x, y: b - 1, w: a, h: 1 }); x += a; break;
+        case "stair": for (let i = 0; i < a; i++) solids.push({ x: x + i, y: 0, w: 1, h: i + 1 }); x += a; break;
+        case "pad":   pads.push({ x, y: a }); x += 1; break;
+        case "orb":   orbs.push({ x, y: a }); x += 1; break;
+        default: throw new Error("unknown level step: " + k);
+      }
+    }
+    orbs.sort((p, q) => p.x - q.x);   // the "one use each" rule relies on this
+
+    // Bucket everything by column so a physics step only looks at what is
+    // actually next to the cube.
+    const grid = new Map();
+    const put = (cx, item) => {
+      const list = grid.get(cx);
+      if (list) list.push(item); else grid.set(cx, [item]);
+    };
+    for (const s of spikes) put(s.x, { kind: "spike", ...s });
+    for (const s of solids) for (let i = 0; i < s.w; i++) put(s.x + i, { kind: "solid", ...s });
+    for (const p of pads)   put(p.x, { kind: "pad", ...p });
+    orbs.forEach((o, i) => put(o.x, { kind: "orb", i, ...o }));
+
+    const endX = x + 14;
+    return { spikes, solids, pads, orbs, grid, endX };
+  }
+
+  // Composite patterns, each measured against the solver before being used.
+  // A run of three or more spikes cannot be cleared by a plain jump, so
+  // hanging a ring over one is what makes rings mandatory rather than
+  // decorative. The trailing number puts the cursor back where the spikes
+  // ended, so callers can space patterns normally.
+  const ringOver = (n, back, y) => [["sp", n], -back, ["orb", y], back - 1];
+  const RING3 = ringOver(3, 3, 2.2);   // 36-frame window
+  const RING4 = ringOver(4, 3, 2.2);   // 19-frame window
+  const RING5 = ringOver(5, 4, 2.6);   // 16-frame window
+  // A pad fires on contact, so these need no timing at all — they are the
+  // showpieces, not the tests.
+  const PAD3    = [["pad", 0], ["sp", 3]];
+  const PAD4    = [["pad", 0], ["sp", 4]];
+  const PADLIFT = [["pad", 0], 1, ["plat", 4, 3], -4, ["spOn", 4, 0], 4];
+
+  const LEVELS = [
+    {
+      name: "NEON RUNWAY",
+      diff: "EASY",
+      hue: { edge: "#46e0ff", sky: ["#0a1230", "#07060f"], glow: "#46e0ff", cube: "#3dffa2" },
+      spec: [
+        22,
+        ["sp", 1], 9, ["sp", 1], 8, ["sp", 1], 10,
+        ["sp", 2], 11,
+        ["sp", 1], 7, ["sp", 1], 11,
+        ["blk", 2, 1], 8,
+        ["sp", 2], 10,
+        ["stair", 2], 9,
+        ["sp", 1], 8, ["sp", 1], 10,
+        ["blk", 2, 1], 7, ["sp", 1], 9,
+        ["sp", 2], 11,
+        ...PAD3, 12,
+        ["sp", 1], 7, ["sp", 1], 7, ["sp", 1], 12,
+        ["blk", 2, 2], 9,
+        ["sp", 2], 10,
+        ["sp", 1], 8, ["sp", 2], 12,
+        ["sp", 1], 9,
+        6,
+      ],
+    },
+    {
+      name: "PULSE FACTORY",
+      diff: "NORMAL",
+      hue: { edge: "#b46bff", sky: ["#22093a", "#07060f"], glow: "#b46bff", cube: "#ffcc33" },
+      spec: [
+        20,
+        ["sp", 2], 8, ["sp", 2], 9,
+        ["blk", 2, 1], 6, ["sp", 1], 8,
+        ["sp", 2], 7, ["sp", 1], 10,
+        ["blk", 2, 2], 7, ["sp", 2], 9,
+        ["stair", 2], 5, ["sp", 1], 9,
+        ...RING3, 11,
+        ["sp", 2], 6, ["sp", 2], 10,
+        ...PAD4, 12,
+        ["sp", 1], 6, ["sp", 2], 9,
+        ...RING4, 11,
+        ["blk", 2, 2], 6, ["sp", 1], 8,
+        ["sp", 2], 7, ["sp", 2], 10,
+        ...PADLIFT, 10,
+        ["sp", 1], 6, ["sp", 2], 8, ["sp", 1], 10,
+        6,
+      ],
+    },
+    {
+      name: "VOID CIRCUIT",
+      diff: "HARD",
+      hue: { edge: "#ff3d6e", sky: ["#3a0a18", "#07060f"], glow: "#ff3d6e", cube: "#46e0ff" },
+      spec: [
+        18,
+        ["sp", 2], 7, ["sp", 2], 7, ["sp", 2], 9,
+        ["blk", 2, 1], 5, ["sp", 2], 8,
+        ...PAD4, 10,
+        ...RING3, 8,
+        ["sp", 2], 6, ["sp", 2], 9,
+        ["blk", 2, 2], 5, ["sp", 2], 8,
+        ...RING4, 9,
+        ["stair", 2], 5, ["sp", 2], 8,
+        ...RING5, 10,
+        ["sp", 2], 6, ["sp", 2], 6, ["sp", 2], 10,
+        ...PADLIFT, 9,
+        ["sp", 2], 7, ["sp", 1], 6, ["sp", 2], 9,
+        ...RING4, 9,
+        ["blk", 2, 2], 5, ["sp", 2], 8,
+        ["sp", 2], 7, ["sp", 2], 11,
+        6,
+      ],
+    },
+  ];
+  LEVELS.forEach(l => { Object.assign(l, build(l.spec)); });
+
+  // ===================================================================
+  // Physics — one fixed step.
+  //
+  // Pure: it reads a level and a state, writes the state, and touches
+  // nothing else. That is what lets the solver run millions of these to
+  // prove a level can actually be finished.
+  // ===================================================================
+  function newState() {
+    return { x: 0, y: 0, vy: 0, ground: true, orb: -1, dead: false, won: false, rot: 0 };
+  }
+
+  function near(lv, x) {
+    const c = Math.floor(x);
+    const out = [];
+    for (let i = c - 1; i <= c + 2; i++) {
+      const list = lv.grid.get(i);
+      if (list) for (const o of list) out.push(o);
+    }
+    return out;
+  }
+
+  /**
+   * Advance one physics step.
+   * @param {object} lv    level
+   * @param {object} st    state, mutated in place
+   * @param {boolean} held is the button down this step
+   */
+  function stepPhysics(lv, st, held) {
+    if (st.dead || st.won) return st;
+
+    const items = near(lv, st.x);
+
+    // --- input ------------------------------------------------------
+    // Holding is not a shortcut: on the ground it re-jumps the moment you
+    // land, and in the air it fires the first ring you touch. Both are the
+    // genre's contract with the player.
+    if (held) {
+      if (st.ground) {
+        st.vy = JUMP;
+        st.ground = false;
+      } else {
+        for (const o of items) {
+          if (o.kind !== "orb" || o.i <= st.orb) continue;
+          const dx = (st.x + 0.5) - (o.x + 0.5), dy = (st.y + 0.5) - o.y;
+          if (dx * dx + dy * dy < 0.85 * 0.85) { st.vy = ORB; st.orb = o.i; break; }
+        }
+      }
+    }
+
+    // --- integrate --------------------------------------------------
+    const prevY = st.y;
+    st.x += SPEED * DT;
+    st.vy -= GRAV * DT;
+    st.y += st.vy * DT;
+    st.ground = false;
+
+    if (st.y <= 0) { st.y = 0; st.vy = 0; st.ground = true; }
+
+    // --- solids: land on top, bonk the underside, die on the side ----
+    for (const b of items) {
+      if (b.kind !== "solid") continue;
+      if (!(st.x + 1 > b.x && st.x < b.x + b.w)) continue;
+      const top = b.y + b.h;
+      if (!(st.y + 1 > b.y && st.y < top)) continue;
+
+      if (st.vy <= 0 && prevY >= top - LAND_EPS) { st.y = top; st.vy = 0; st.ground = true; }
+      else if (st.vy > 0 && prevY + 1 <= b.y + LAND_EPS) { st.y = b.y - 1; st.vy = 0; }
+      else { st.dead = true; return st; }
+    }
+
+    // --- pads: fire on contact, no input needed ----------------------
+    for (const p of items) {
+      if (p.kind !== "pad") continue;
+      if (st.x + 1 > p.x + 0.1 && st.x < p.x + 0.9 &&
+          st.y < p.y + 0.45 && st.y + 1 > p.y) { st.vy = PAD; st.ground = false; }
+    }
+
+    // --- spikes ------------------------------------------------------
+    const hx0 = st.x + HAZ_IN, hx1 = st.x + 1 - HAZ_IN;
+    const hy0 = st.y + 0.04,   hy1 = st.y + 1 - HAZ_IN;
+    for (const s of items) {
+      if (s.kind !== "spike") continue;
+      const sx0 = s.x + 0.5 - SPIKE_W / 2, sx1 = s.x + 0.5 + SPIKE_W / 2;
+      if (hx1 > sx0 && hx0 < sx1 && hy1 > s.y && hy0 < s.y + SPIKE_H) { st.dead = true; return st; }
+    }
+
+    if (st.x >= lv.endX) st.won = true;
+    return st;
+  }
+
+  // ===================================================================
+  // Game state
+  // ===================================================================
+  const canvas = document.getElementById("game");
+  const ctx    = canvas.getContext("2d");
+  const app    = document.getElementById("app");
+
+  const hud       = document.getElementById("hud");
+  const hudName   = document.getElementById("hudName");
+  const hudTries  = document.getElementById("hudTries");
+  const hudFill   = document.getElementById("hudFill");
+  const hudPct    = document.getElementById("hudPct");
+  const pauseBtn  = document.getElementById("pauseBtn");
+  const levelsBox = document.getElementById("levels");
+
+  const menuScreen  = document.getElementById("menuScreen");
+  const pauseScreen = document.getElementById("pauseScreen");
+  const winScreen   = document.getElementById("winScreen");
+  const pauseInfo   = document.getElementById("pauseInfo");
+  const winInfo     = document.getElementById("winInfo");
+
+  const MODE = { MENU: "menu", PLAY: "play", DEAD: "dead", PAUSE: "pause", WIN: "win" };
+
+  const BEST_KEY = "vector-rush-best";
+  let best = {};
+  try { best = JSON.parse(localStorage.getItem(BEST_KEY)) || {}; } catch (_) { best = {}; }
+
+  let mode      = MODE.MENU;
+  let level     = LEVELS[0];
+  let levelIdx  = 0;
+  let st        = newState();
+  let held      = false;   // does the game currently read the button as down
+  let down      = false;   // is the button physically down, whatever the mode
+  let tries     = 1;
+  let deadFor   = 0;      // seconds since death, drives the restart delay
+  let shake     = 0;
+  let acc       = 0;
+  let last      = 0;
+  let elapsed   = 0;      // seconds of level time, for animation only
+  let particles = [];
+  let trail     = [];
+
+  const saveBest = () => { try { localStorage.setItem(BEST_KEY, JSON.stringify(best)); } catch (_) {} };
+  const pct = () => Math.max(0, Math.min(100, (st.x / level.endX) * 100));
+
+  // ===================================================================
+  // Level select
+  // ===================================================================
+  function paintMenu() {
+    levelsBox.innerHTML = "";
+    LEVELS.forEach((lv, i) => {
+      const b = best[i] || 0;
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "card";
+      card.style.setProperty("--edge", lv.hue.edge);
+      card.innerHTML =
+        '<span class="num">' + (i + 1) + '</span>' +
+        '<span class="meta"><span>' + lv.name + '</span>' +
+        '<span class="sub">' + lv.diff + ' &middot; ' + Math.round(lv.endX / SPEED) + 'S</span></span>' +
+        '<span class="pct' + (b >= 100 ? ' done' : '') + '">' + Math.floor(b) + '%</span>';
+      card.addEventListener("click", () => startLevel(i));
+      levelsBox.appendChild(card);
+    });
+  }
+
+  function show(screen) {
+    for (const s of [menuScreen, pauseScreen, winScreen]) s.hidden = (s !== screen);
+    const playing = screen === null;
+    hud.classList.toggle("hide", !playing && screen !== pauseScreen);
+    pauseBtn.classList.toggle("hide", !playing);
+  }
+
+  function startLevel(i) {
+    levelIdx = i;
+    level = LEVELS[i];
+    tries = 1;
+    resetRun();
+    mode = MODE.PLAY;
+    show(null);
+    hudName.textContent = level.name;
+    document.documentElement.style.setProperty("--edge", level.hue.edge);
+  }
+
+  function resetRun() {
+    st = newState();
+    particles = [];
+    trail = [];
+    deadFor = 0;
+    elapsed = 0;
+    acc = 0;
+    held = down;       // still holding? then the retry starts jumping, as expected
+    updateHud();
+  }
+
+  function updateHud() {
+    const p = pct();
+    hudFill.style.width = p + "%";
+    hudPct.textContent = Math.floor(p) + "%";
+    hudTries.textContent = tries;
+  }
+
+  function die() {
+    if (mode !== MODE.PLAY) return;
+    mode = MODE.DEAD;
+    deadFor = 0;
+    shake = 0.5;
+    burst(st.x + 0.5, st.y + 0.5, 26, level.hue.cube);
+    const p = pct();
+    if (p > (best[levelIdx] || 0)) { best[levelIdx] = p; saveBest(); }
+  }
+
+  function win() {
+    mode = MODE.WIN;
+    best[levelIdx] = 100;
+    saveBest();
+    burst(st.x + 0.5, st.y + 1, 40, "#ffcc33");
+    winInfo.innerHTML = level.name + "<br>ATTEMPTS " + tries;
+    show(winScreen);
+    paintMenu();
+  }
+
+  // ===================================================================
+  // Particles
+  // ===================================================================
+  function burst(x, y, n, color) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 2 + Math.random() * 9;
+      particles.push({
+        x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s + 3,
+        life: 0.5 + Math.random() * 0.5, age: 0,
+        size: 0.1 + Math.random() * 0.22, color,
+      });
+    }
+  }
+
+  function stepEffects(dt) {
+    for (const p of particles) {
+      p.age += dt;
+      p.vy -= 34 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.y < 0) { p.y = 0; p.vy *= -0.35; p.vx *= 0.7; }
+    }
+    particles = particles.filter(p => p.age < p.life);
+
+    for (const t of trail) t.age += dt;
+    trail = trail.filter(t => t.age < 0.32);
+
+    if (shake > 0) shake = Math.max(0, shake - dt * 1.8);
+  }
+
+  // ===================================================================
+  // Main loop
+  // ===================================================================
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+
+    if (mode === MODE.PLAY) {
+      acc += dt;
+      elapsed += dt;
+      let guard = 40;
+      while (acc >= DT && guard-- > 0) {
+        acc -= DT;
+        const wasAir = !st.ground;
+        stepPhysics(level, st, held);
+
+        // Spin while airborne, snap flat on landing — the cube's tumble is
+        // the main read on where you are in a jump.
+        if (!st.ground) st.rot += DT * 7.2;
+        else if (wasAir) { st.rot = Math.round(st.rot / (Math.PI / 2)) * (Math.PI / 2); burst(st.x + 0.5, st.y, 5, level.hue.glow); }
+
+        trail.push({ x: st.x, y: st.y, age: 0, rot: st.rot });
+
+        if (st.dead) { die(); break; }
+        if (st.won)  { win(); break; }
+      }
+      if (acc > DT) acc = 0;
+      updateHud();
+    } else if (mode === MODE.DEAD) {
+      deadFor += dt;
+      if (deadFor > 0.55) { tries++; resetRun(); mode = MODE.PLAY; }
+    }
+
+    if (mode !== MODE.PAUSE) stepEffects(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // ===================================================================
+  // Rendering
+  // ===================================================================
+  let S = 24, groundY = 400, camX = 0, viewW = 18, bandTop = 0, bandH = 0;
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const w = app.clientWidth, h = app.clientHeight;
+    canvas.width  = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+
+    // The world is drawn into a band of fixed proportions, centred vertically.
+    // A tall screen gets bars rather than acres of empty sky above the floor.
+    bandH   = Math.min(canvas.height, canvas.width / BAND_AR);
+    bandTop = Math.round((canvas.height - bandH) * 0.42);   // a touch above centre,
+                                                           // clear of a resting thumb
+    const above = bandH * 0.76;          // headroom inside the band
+
+    // Satisfy both constraints: enough sky for a pad launch, and enough level
+    // on screen to react to. Whichever is tighter wins.
+    S = Math.min(canvas.width / VIEW_MIN, above / SKY);
+    S = Math.max(S, canvas.width / VIEW_MAX);
+    groundY = Math.round(bandTop + above);
+    viewW = canvas.width / S;
+  }
+
+  const sx = wx => (wx - camX) * S;
+  const sy = wy => groundY - wy * S;
+
+  function draw() {
+    const W = canvas.width, H = canvas.height;
+    camX = st.x - viewW * 0.3;   // cube sits ~a third in
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (shake > 0) {
+      const k = shake * shake * 26;
+      ctx.setTransform(1, 0, 0, 1, (Math.random() - .5) * k, (Math.random() - .5) * k);
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-40, bandTop, W + 80, bandH);
+    ctx.clip();
+
+    // --- sky ---------------------------------------------------------
+    const hue = level.hue;
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, hue.sky[0]);
+    g.addColorStop(1, hue.sky[1]);
+    ctx.fillStyle = g;
+    ctx.fillRect(-40, bandTop - 40, W + 80, bandH + 80);
+
+    // Parallax grid, drifting slower than the level itself.
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    ctx.strokeStyle = hue.glow;
+    ctx.lineWidth = Math.max(1, S * 0.02);
+    const stepPx = S * 2;                       // a grid cell every two blocks
+    const drift = (camX * 0.35 * S) % stepPx;   // background slides slower than the level
+    ctx.beginPath();
+    for (let px = -drift; px < W + stepPx; px += stepPx) { ctx.moveTo(px, 0); ctx.lineTo(px, groundY); }
+    for (let y = 0; y <= 10; y += 2) { ctx.moveTo(0, sy(y)); ctx.lineTo(W, sy(y)); }
+    ctx.stroke();
+    ctx.restore();
+
+    // Pulsing horizon glow.
+    ctx.save();
+    ctx.globalAlpha = 0.25 + 0.1 * Math.sin(elapsed * 4);
+    const gg = ctx.createLinearGradient(0, groundY - S * 5, 0, groundY);
+    gg.addColorStop(0, "rgba(0,0,0,0)");
+    gg.addColorStop(1, hue.glow);
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, groundY - S * 5, W, S * 5);
+    ctx.restore();
+
+    // --- floor -------------------------------------------------------
+    ctx.fillStyle = "rgba(0,0,0,.72)";
+    ctx.fillRect(0, groundY, W, bandTop + bandH - groundY);
+    ctx.fillStyle = hue.glow;
+    ctx.fillRect(0, groundY - Math.max(2, S * 0.06), W, Math.max(2, S * 0.06));
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = hue.glow;
+    ctx.lineWidth = Math.max(1, S * 0.03);
+    ctx.beginPath();
+    for (let i = 0; i < viewW + 2; i++) {
+      const px = (i - (camX % 1)) * S;
+      ctx.moveTo(px, groundY); ctx.lineTo(px - S * 0.6, bandTop + bandH);
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // --- geometry ----------------------------------------------------
+    const from = Math.floor(camX) - 2, to = Math.ceil(camX + viewW) + 2;
+    for (let cx = from; cx <= to; cx++) {
+      const list = level.grid.get(cx);
+      if (!list) continue;
+      for (const o of list) {
+        if (o.kind === "solid" && o.x !== cx) continue;   // draw wide blocks once
+        drawObject(o);
+      }
+    }
+
+    // Finish gate.
+    if (level.endX > camX && level.endX < camX + viewW + 3) {
+      const gx = sx(level.endX);
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      const fg = ctx.createLinearGradient(gx, sy(9), gx, groundY);
+      fg.addColorStop(0, "rgba(255,204,51,0)");
+      fg.addColorStop(1, "#ffcc33");
+      ctx.fillStyle = fg;
+      ctx.fillRect(gx, sy(9), Math.max(3, S * 0.18), S * 9);
+      ctx.restore();
+    }
+
+    // --- trail -------------------------------------------------------
+    for (const t of trail) {
+      const a = 1 - t.age / 0.32;
+      ctx.save();
+      ctx.globalAlpha = a * 0.32;
+      ctx.fillStyle = hue.cube;
+      const s = S * (0.5 + 0.4 * a);
+      ctx.translate(sx(t.x + 0.5), sy(t.y + 0.5));
+      ctx.rotate(t.rot);
+      ctx.fillRect(-s / 2, -s / 2, s, s);
+      ctx.restore();
+    }
+
+    // --- cube --------------------------------------------------------
+    if (mode !== MODE.DEAD) {
+      ctx.save();
+      ctx.translate(sx(st.x + 0.5), sy(st.y + 0.5));
+      ctx.rotate(st.rot);
+      const s = S;
+      ctx.shadowColor = hue.cube;
+      ctx.shadowBlur = S * 0.6;
+      ctx.fillStyle = hue.cube;
+      ctx.fillRect(-s / 2, -s / 2, s, s);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(0,0,0,.72)";
+      ctx.fillRect(-s * 0.28, -s * 0.28, s * 0.56, s * 0.56);
+      ctx.fillStyle = hue.cube;
+      ctx.fillRect(-s * 0.13, -s * 0.13, s * 0.26, s * 0.26);
+      ctx.restore();
+    }
+
+    // --- particles ---------------------------------------------------
+    for (const p of particles) {
+      const a = 1 - p.age / p.life;
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.fillStyle = p.color;
+      const s = p.size * S;
+      ctx.fillRect(sx(p.x) - s / 2, sy(p.y) - s / 2, s, s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();                         // end of the play band
+
+    // Letterbox bars, so the band reads as deliberate framing.
+    if (bandTop > 0) {
+      ctx.fillStyle = "#04030a";
+      ctx.fillRect(-40, -40, W + 80, bandTop + 40);
+      ctx.fillRect(-40, bandTop + bandH, W + 80, H);
+      ctx.fillStyle = "rgba(255,255,255,.10)";
+      ctx.fillRect(0, bandTop - 1, W, 2);
+      ctx.fillRect(0, bandTop + bandH - 1, W, 2);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+
+  function drawObject(o) {
+    const hue = level.hue;
+    if (o.kind === "solid") {
+      const x = sx(o.x), y = sy(o.y + o.h), w = o.w * S, h = o.h * S;
+      ctx.fillStyle = "rgba(10,8,22,.92)";
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = hue.edge;
+      ctx.lineWidth = Math.max(2, S * 0.07);
+      ctx.strokeRect(x + ctx.lineWidth / 2, y + ctx.lineWidth / 2, w - ctx.lineWidth, h - ctx.lineWidth);
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = hue.edge;
+      ctx.fillRect(x, y, w, Math.max(2, S * 0.05));   // lit top edge
+      ctx.restore();
+    } else if (o.kind === "spike") {
+      const bx = sx(o.x), by = sy(o.y);
+      ctx.beginPath();
+      ctx.moveTo(bx + S * 0.06, by);
+      ctx.lineTo(bx + S * 0.5,  by - S * 0.98);
+      ctx.lineTo(bx + S * 0.94, by);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(12,8,20,.95)";
+      ctx.fill();
+      ctx.strokeStyle = hue.edge;
+      ctx.lineWidth = Math.max(2, S * 0.06);
+      ctx.stroke();
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = hue.edge;
+      ctx.beginPath();
+      ctx.moveTo(bx + S * 0.36, by - S * 0.04);
+      ctx.lineTo(bx + S * 0.5,  by - S * 0.55);
+      ctx.lineTo(bx + S * 0.64, by - S * 0.04);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else if (o.kind === "pad") {
+      const x = sx(o.x), y = sy(o.y);
+      ctx.fillStyle = "#ffcc33";
+      ctx.shadowColor = "#ffcc33";
+      ctx.shadowBlur = S * 0.5;
+      ctx.beginPath();
+      ctx.ellipse(x + S * 0.5, y - S * 0.1, S * 0.44, S * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(0,0,0,.55)";
+      ctx.fillRect(x + S * 0.2, y - S * 0.13, S * 0.6, S * 0.05);
+    } else if (o.kind === "orb") {
+      const x = sx(o.x + 0.5), y = sy(o.y);
+      const pulse = 0.86 + 0.14 * Math.sin(elapsed * 7 + o.x);
+      const used = o.i <= st.orb;
+      ctx.save();
+      ctx.globalAlpha = used ? 0.28 : 1;
+      ctx.strokeStyle = "#ff6bd6";
+      ctx.shadowColor = "#ff6bd6";
+      ctx.shadowBlur = S * 0.5;
+      ctx.lineWidth = Math.max(2, S * 0.08);
+      ctx.beginPath();
+      ctx.arc(x, y, S * 0.4 * pulse, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = (used ? 0.15 : 0.45) * pulse;
+      ctx.fillStyle = "#ff6bd6";
+      ctx.beginPath();
+      ctx.arc(x, y, S * 0.24 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ===================================================================
+  // Input
+  // ===================================================================
+  function press() {
+    down = true;
+    if (mode === MODE.PLAY) held = true;
+  }
+  function release() { down = false; held = false; }
+
+  app.addEventListener("pointerdown", (e) => {
+    if (e.target.closest("button")) return;     // let the UI have its taps
+    e.preventDefault();
+    if (mode === MODE.PLAY) press();
+  });
+  window.addEventListener("pointerup", release);
+  window.addEventListener("pointercancel", release);
+
+  window.addEventListener("keydown", (e) => {
+    if (e.repeat) { if (e.key === " " || e.key === "ArrowUp" || e.key === "w") e.preventDefault(); return; }
+    switch (e.key) {
+      case " ": case "ArrowUp": case "w": case "W":
+        e.preventDefault();
+        if (mode === MODE.PLAY) press();
+        else if (mode === MODE.PAUSE) resume();
+        break;
+      case "Escape": case "p": case "P":
+        if (mode === MODE.PLAY || mode === MODE.DEAD) pause();
+        else if (mode === MODE.PAUSE) resume();
+        break;
+      case "r": case "R":
+        if (mode === MODE.PLAY || mode === MODE.DEAD || mode === MODE.PAUSE) { tries++; resetRun(); mode = MODE.PLAY; show(null); }
+        break;
+      case "1": case "2": case "3":
+        if (mode === MODE.MENU || mode === MODE.WIN) startLevel(Number(e.key) - 1);
+        break;
+    }
+  }, { passive: false });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.key === " " || e.key === "ArrowUp" || e.key === "w" || e.key === "W") release();
+  });
+
+  // ===================================================================
+  // Screens
+  // ===================================================================
+  function pause() {
+    if (mode !== MODE.PLAY && mode !== MODE.DEAD) return;
+    mode = MODE.PAUSE;
+    held = false;
+    pauseInfo.innerHTML = level.name + "<br>BEST " + Math.floor(best[levelIdx] || 0) + "%";
+    show(pauseScreen);
+  }
+  function resume() {
+    if (mode !== MODE.PAUSE) return;
+    mode = MODE.PLAY;
+    held = down;
+    last = performance.now();
+    acc = 0;
+    show(null);
+  }
+  function toMenu() {
+    mode = MODE.MENU;
+    held = false;
+    paintMenu();
+    show(menuScreen);
+  }
+
+  pauseBtn.addEventListener("click", pause);
+  document.getElementById("resumeBtn").addEventListener("click", resume);
+  document.getElementById("retryBtn").addEventListener("click", () => { tries++; resetRun(); mode = MODE.PLAY; show(null); });
+  document.getElementById("quitBtn").addEventListener("click", toMenu);
+  document.getElementById("menuBtn").addEventListener("click", toMenu);
+  document.getElementById("againBtn").addEventListener("click", () => startLevel(levelIdx));
+  document.getElementById("nextBtn").addEventListener("click", () => startLevel((levelIdx + 1) % LEVELS.length));
+
+  document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); });
+  document.addEventListener("gesturestart", (e) => e.preventDefault());
+  document.addEventListener("dblclick", (e) => e.preventDefault());
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", () => setTimeout(resize, 120));
+
+  // Debug hook: exposes the pure physics so a headless harness can search
+  // the input space and prove each level is completable.
+  window.DashDebug = {
+    LEVELS, newState, stepPhysics, build, DT, SPEED,
+    meta: LEVELS.map(l => ({ name: l.name, diff: l.diff, endX: l.endX,
+                             spikes: l.spikes.length, orbs: l.orbs.length })),
+    play: startLevel,
+    get mode() { return mode; },
+    get state() { return st; },
+  };
+
+  paintMenu();
+  show(menuScreen);
+  resize();
+  last = performance.now();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
