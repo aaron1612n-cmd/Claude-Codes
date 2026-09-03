@@ -71,17 +71,44 @@ Everything adjustable is in the `CONFIG` table at the top of the file.
 | `MinPitch` / `MaxPitch` | `-78` / `78` | Vertical look limits, in degrees |
 | `MinZoom` / `MaxZoom` | `0.5` / `20` | Zoom range, in studs |
 | `CameraCollision` | `true` | Pull the camera in so walls don't clip |
+| `CameraCollisionRadius` | `0.5` | Radius of the swept sphere used for collision |
+| `CameraCollisionPadding` | `0.25` | Gap left between the camera and a wall |
+| `CameraReturnSpeed` | `6` | How fast the camera eases back out after an obstruction |
+| `HideCharacterDistance` | `1.5` | Hide your character once the camera is this close |
+| `ShowCrosshair` | `true` | Fixed centre dot to aim with |
 
 If turning feels sluggish on your iPad, raise `Sensitivity` first. If you keep
 running out of room before the edge zone catches you, widen `EdgeMargin`.
+
+## About the cursor
+
+The cursor still slides around the screen in shift lock, and no in-game script
+can stop that. iPadOS owns the pointer; `MouseBehavior = LockCenter` is ignored
+and `MouseIconEnabled = false` only hides Roblox's own drawn cursor, not the
+system one. Pinning it to the middle is exactly the thing the OS won't allow —
+which is why this script converts the cursor's wandering into camera rotation
+instead of trying to stop it.
+
+What that means in practice:
+
+- A centre crosshair is drawn while locked, so you have a stable aim point even
+  though the cursor is somewhere else.
+- Raising `Sensitivity` is the best mitigation. Higher sensitivity means the
+  cursor travels less across the screen for the same amount of turning, so you
+  hit the edge less often. Try `0.5` or `0.6` if the default has you constantly
+  running into the border.
+- Clicks land wherever the system cursor actually is, not at the crosshair.
+  Nothing client-side can change that.
 
 ## Tests
 
 `tests/` runs the script against a stubbed Roblox runtime (Vector2/Vector3,
 enough `CFrame` math to check the camera really points where it should, signals,
-and instances). It covers the iPad path with deltas forced to zero, edge
-steering, desktop lock detection, pitch clamping, first-person transparency, and
-handing the camera back cleanly.
+and instances). 26 checks covering the iPad path with deltas forced to zero,
+edge steering, desktop lock detection, pitch clamping, first-person
+transparency, camera handback, and camera collision — including the easing
+behaviour and the cases where a wall pushes the camera inside your own
+character.
 
 ```sh
 curl -sSL -o luau.zip \

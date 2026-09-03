@@ -88,5 +88,59 @@ check("AutoRotate restored", humanoid.AutoRotate == true)
 check("cursor restored", UserInputService.MouseIconEnabled == true)
 check("character not left invisible", head.LocalTransparencyModifier == 0, head.LocalTransparencyModifier)
 
+print("== 9. camera collision ==")
+-- Back to a clean third-person shift lock, zoomed out and fully settled.
+key(Enum.KeyCode.LeftShift)
+UserInputService._mouseLoc = Vector2.new(600, 400)
+step(1/60)
+UserInputService.InputChanged.fire({UserInputType = Enum.UserInputType.MouseWheel,
+	Position = Vector3.new(0, 0, -20)}, false)
+for i = 1, 200 do step(1/60) end
+local openDist = (camera.CFrame.Position - head.Position).Magnitude
+check("no wall means full distance", openDist > 5, openDist)
+
+wallDistance = 3
+step(1/60)
+local walled = (camera.CFrame.Position - head.Position).Magnitude
+check("wall pulls the camera in", walled < openDist and walled <= 3.01, walled)
+check("camera stops short of the wall", walled <= 3 - 0.25 + 1e-6, walled)
+
+print("== 10. a wall that shoves the camera into you hides the character ==")
+wallDistance = 0.4
+step(1/60)
+check("character hidden when camera is inside it", head.LocalTransparencyModifier == 1,
+	head.LocalTransparencyModifier)
+
+print("== 11. easing out: no single-frame pop back to full distance ==")
+wallDistance = nil
+step(1/60)
+local afterOneFrame = (camera.CFrame.Position - head.Position).Magnitude
+check("does not snap straight back out", afterOneFrame < openDist * 0.9,
+	("%.3f vs open %.3f"):format(afterOneFrame, openDist))
+for i = 1, 120 do step(1/60) end
+local settled = (camera.CFrame.Position - head.Position).Magnitude
+check("but does return to full distance", math.abs(settled - openDist) < 0.05,
+	("%.3f vs open %.3f"):format(settled, openDist))
+check("character visible again once the camera is back out", head.LocalTransparencyModifier == 0,
+	head.LocalTransparencyModifier)
+
+print("== 12. snapping in is immediate, so nothing clips ==")
+wallDistance = 1.0
+step(1/60)
+check("one frame is enough to pull in", (camera.CFrame.Position - head.Position).Magnitude <= 1.0,
+	(camera.CFrame.Position - head.Position).Magnitude)
+wallDistance = nil
+
+print("== 13. shift lock side offset is collision tested, not bolted on ==")
+-- With the camera hard against a wall the side offset must be swept too, so
+-- the camera cannot end up further from the player than the wall allows.
+wallDistance = 0.5
+for i = 1, 10 do step(1/60) end
+check("side offset cannot push past the wall",
+	(camera.CFrame.Position - head.Position).Magnitude <= 0.51,
+	(camera.CFrame.Position - head.Position).Magnitude)
+wallDistance = nil
+for i = 1, 120 do step(1/60) end
+
 print(("\n%d passed, %d failed"):format(pass, fail))
 if fail > 0 then error("test failures: " .. fail, 0) end

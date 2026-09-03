@@ -85,7 +85,8 @@ end
 
 Color3 = {fromRGB = function(r,g,b) return {R=r,G=g,B=b} end}
 UDim = {new = function(s,o) return {Scale=s,Offset=o} end}
-UDim2 = {new = function(a,b,c,d) return {} end, fromOffset = function(a,b) return {} end}
+UDim2 = {new = function(a,b,c,d) return {} end, fromOffset = function(a,b) return {} end,
+         fromScale = function(a,b) return {} end}
 
 -- Enums: any dotted path resolves to a unique sentinel ----------------------
 local function enumNode(path)

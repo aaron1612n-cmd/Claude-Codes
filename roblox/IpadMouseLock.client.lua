@@ -65,7 +65,16 @@ local CONFIG = {
 	ZoomStep = 1.5,
 
 	CameraCollision = true, -- pull the camera in so walls don't clip through
+	CameraCollisionRadius = 0.5, -- swept sphere, so corners don't slip past
+	CameraCollisionPadding = 0.25, -- gap left between camera and wall
+	CameraReturnSpeed = 6, -- how fast the camera eases back out, per second
+
+	-- Hide the local character once the camera is this close to it, however it
+	-- got that close.
+	HideCharacterDistance = 1.5,
+
 	HideCursor = true,
+	ShowCrosshair = true, -- fixed aim point; the iPad cursor can't be pinned
 }
 
 local player = Players.LocalPlayer
@@ -85,11 +94,13 @@ local lastPointerPos = nil
 local pointerTrulyLocked = false -- native lock works (desktop); skip edge steering
 local activeTouch = nil
 local lastTouchPos = nil
+local smoothedReach = nil
 local sawMouse = false
 local lastMouseTime = 0
 local lastTouchTime = 0
 
 local refreshToggleButton = function() end -- replaced below if the button exists
+local setCrosshairVisible = function() end -- ditto
 
 local function setShiftLock(value)
 	shiftLockOn = value
@@ -208,8 +219,11 @@ local function setActive(on)
 	end
 	active = on
 
+	setCrosshairVisible(on)
+
 	if on then
 		seedFromStockCamera()
+		smoothedReach = nil
 		camera.CameraType = Enum.CameraType.Scriptable
 		if CONFIG.HideCursor then
 			UserInputService.MouseIconEnabled = false
@@ -342,6 +356,36 @@ end
 
 local collisionParams = RaycastParams.new()
 collisionParams.FilterType = Enum.RaycastFilterType.Exclude
+collisionParams.IgnoreWater = true
+-- Without this, decorative parts and invisible trigger volumes shove the
+-- camera around exactly as if they were walls.
+collisionParams.RespectCanCollide = true
+
+-- How far the camera can sit along `offset` from `origin` before it would end
+-- up inside something. `origin` is always the subject, which sits inside the
+-- character we filter out, so the cast never starts inside its own geometry.
+local function resolveCollision(origin, offset)
+	local reach = offset.Magnitude
+	if not CONFIG.CameraCollision or reach < 1e-4 then
+		return reach
+	end
+
+	local character = player.Character
+	collisionParams.FilterDescendantsInstances = character and { character } or {}
+
+	-- A swept sphere stops the camera slipping through corners and doorframes
+	-- the way a single thin ray does.
+	local hit
+	if workspace.Spherecast then
+		hit = workspace:Spherecast(origin, CONFIG.CameraCollisionRadius, offset, collisionParams)
+	else
+		hit = workspace:Raycast(origin, offset, collisionParams)
+	end
+	if not hit then
+		return reach
+	end
+	return clamp(hit.Distance - CONFIG.CameraCollisionPadding, 0, reach)
+end
 
 local function updateCamera(dt)
 	if not shouldBeActive() then
@@ -367,28 +411,40 @@ local function updateCamera(dt)
 	end
 
 	local rotation = CFrame.fromEulerAnglesYXZ(math.rad(pitch), math.rad(yaw), 0)
-	local focus, subjectOffset = getFocusPosition()
-	focus += rotation:VectorToWorldSpace(subjectOffset)
+	local subjectPos, subjectOffset = getFocusPosition()
+	local origin = subjectPos + rotation:VectorToWorldSpace(subjectOffset)
 
 	local firstPerson = distance <= CONFIG.FirstPersonDistance
-	if not firstPerson then
-		focus += rotation:VectorToWorldSpace(CONFIG.ShiftLockOffset)
+
+	-- Place the camera with one offset in camera space (+X right, +Z back)
+	-- rather than a side offset bolted on after the fact. The shift lock side
+	-- offset then gets swept for collision along with the distance, instead of
+	-- being free to push the camera through a wall on its own.
+	local offset = firstPerson and Vector3.zero
+		or Vector3.new(CONFIG.ShiftLockOffset.X, CONFIG.ShiftLockOffset.Y, distance)
+	local worldOffset = rotation:VectorToWorldSpace(offset)
+	local target = resolveCollision(origin, worldOffset)
+
+	-- Snap inward so nothing ever clips, but ease back out. Grazing the edge of
+	-- a wall flickers the cast between hit and miss, and without the easing that
+	-- flicker becomes the camera slamming in and out every frame.
+	if smoothedReach == nil or target < smoothedReach then
+		smoothedReach = target
+	else
+		smoothedReach += (target - smoothedReach) * math.min(1, dt * CONFIG.CameraReturnSpeed)
 	end
 
-	local back = -rotation.LookVector
-	local reach = firstPerson and 0 or distance
-
-	if CONFIG.CameraCollision and reach > 0 then
-		local character = player.Character
-		collisionParams.FilterDescendantsInstances = character and { character } or {}
-		local hit = workspace:Raycast(focus, back * (reach + 0.5), collisionParams)
-		if hit then
-			reach = math.max(0.5, (hit.Position - focus).Magnitude - 0.25)
-		end
+	local cameraPos = origin
+	if worldOffset.Magnitude > 1e-4 then
+		cameraPos = origin + worldOffset.Unit * smoothedReach
 	end
+	camera.CFrame = CFrame.new(cameraPos) * rotation
 
-	camera.CFrame = CFrame.new(focus + back * reach) * rotation
-	setCharacterHidden(firstPerson)
+	-- Hide the character based on where the camera actually ended up, not on the
+	-- zoom we asked for. A wall can shove a third person camera inside your own
+	-- head, and keying this off the requested distance left you staring at the
+	-- inside of it.
+	setCharacterHidden((cameraPos - subjectPos).Magnitude <= CONFIG.HideCharacterDistance)
 
 	-- Shift lock / first person: the character faces where you look.
 	local humanoid = getHumanoid()
@@ -426,16 +482,50 @@ if player.Character then
 	watchCharacter(player.Character)
 end
 
--- Toggle button ------------------------------------------------------------
+-- On-screen UI --------------------------------------------------------------
 -- iPads often have no Shift key, so give shift lock a tappable control.
 
-if CONFIG.ShowToggleButton then
+if CONFIG.ShowToggleButton or CONFIG.ShowCrosshair then
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "IpadMouseLockUI"
 	gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	gui.Parent = player:WaitForChild("PlayerGui")
+
+	if CONFIG.ShowCrosshair then
+		-- iPadOS owns the system pointer, so no script can pin it to the middle
+		-- of the screen. A fixed reticle at least gives you a stable aim point
+		-- while the cursor wanders off on its own.
+		local dot = Instance.new("Frame")
+		dot.Size = UDim2.fromOffset(6, 6)
+		dot.AnchorPoint = Vector2.new(0.5, 0.5)
+		dot.Position = UDim2.fromScale(0.5, 0.5)
+		dot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		dot.BackgroundTransparency = 0.3
+		dot.BorderSizePixel = 0
+		dot.Visible = false
+		dot.Parent = gui
+
+		local dotCorner = Instance.new("UICorner")
+		dotCorner.CornerRadius = UDim.new(1, 0)
+		dotCorner.Parent = dot
+
+		local dotStroke = Instance.new("UIStroke")
+		dotStroke.Color = Color3.fromRGB(0, 0, 0)
+		dotStroke.Transparency = 0.5
+		dotStroke.Thickness = 1
+		dotStroke.Parent = dot
+
+		setCrosshairVisible = function(visible)
+			dot.Visible = visible
+		end
+		setCrosshairVisible(active)
+	end
+
+	if not CONFIG.ShowToggleButton then
+		return
+	end
 
 	local button = Instance.new("TextButton")
 	button.Size = UDim2.fromOffset(96, 44)

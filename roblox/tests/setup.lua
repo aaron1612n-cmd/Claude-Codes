@@ -35,7 +35,18 @@ player = {
 }
 function player:WaitForChild(n) return self._children[n] end
 
-workspace = {CurrentCamera = camera, Raycast = function() return nil end}
+-- Tests set `wallDistance` to place a flat obstruction that many studs behind
+-- the camera origin; nil means open space.
+wallDistance = nil
+workspace = {
+	CurrentCamera = camera,
+	Raycast = function(_, origin, direction, params)
+		if not wallDistance then return nil end
+		local reach = direction.Magnitude
+		if wallDistance > reach then return nil end
+		return {Distance = wallDistance, Position = origin + direction.Unit * wallDistance}
+	end,
+}
 RaycastParams = {new = function() return {} end}
 local services = {Players = {LocalPlayer = player}, RunService = RunService, UserInputService = UserInputService}
 game = {GetService = function(_, n) return assert(services[n], "missing service " .. n) end}
