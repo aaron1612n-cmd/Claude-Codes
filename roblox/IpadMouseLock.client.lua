@@ -52,6 +52,11 @@ local CONFIG = {
 	EdgeMargin = 110,
 	EdgeTurnSpeed = 1100, -- pixel-equivalents per second at full push
 
+	-- A cursor step larger than this fraction of the screen is treated as a
+	-- warp rather than a real movement. iPadOS magnetises its pointer onto UI
+	-- and jumps it when it re-enters the window; without this the camera flings.
+	WarpThreshold = 0.35,
+
 	-- Shift lock: camera sits this far to the player's right, character faces
 	-- wherever the camera looks.
 	ShiftLockOffset = Vector3.new(1.75, 0, 0),
@@ -95,6 +100,11 @@ local pointerTrulyLocked = false -- native lock works (desktop); skip edge steer
 local activeTouch = nil
 local lastTouchPos = nil
 local smoothedReach = nil
+
+-- Set while the handback below has temporarily raised the player's minimum
+-- zoom. Zoom limits must keep reading the player's real value through that
+-- window, or re-engaging mid-nudge forces the camera straight back out.
+local zoomNudgeOriginal = nil
 local sawMouse = false
 local lastMouseTime = 0
 local lastTouchTime = 0
@@ -109,6 +119,14 @@ end
 
 local function clamp(n, lo, hi)
 	return math.max(lo, math.min(hi, n))
+end
+
+-- Games restrict zoom through the Player object; honour that instead of
+-- letting our own range override the rules of whatever place we are in.
+local function zoomLimits()
+	local minZoom = math.max(CONFIG.MinZoom, zoomNudgeOriginal or player.CameraMinZoomDistance)
+	local maxZoom = math.min(CONFIG.MaxZoom, player.CameraMaxZoomDistance)
+	return minZoom, math.max(minZoom, maxZoom)
 end
 
 local function getHumanoid()
@@ -147,6 +165,12 @@ local function currentStockDistance()
 end
 
 local function shouldBeActive()
+	-- A dead character gets Roblox's own death camera; driving it ourselves
+	-- (and forcing the root part to turn) fights the ragdoll.
+	local humanoid = getHumanoid()
+	if humanoid and humanoid.Health <= 0 then
+		return false
+	end
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
 		return true
 	end
@@ -204,13 +228,41 @@ local function seedFromStockCamera()
 	yaw = math.deg(math.atan2(-look.X, -look.Z))
 	pitch = clamp(math.deg(math.asin(clamp(look.Y, -1, 1))), CONFIG.MinPitch, CONFIG.MaxPitch)
 
+	local minZoom, maxZoom = zoomLimits()
 	local d = currentStockDistance()
-	if d > 0.1 and d < CONFIG.MaxZoom * 2 then
-		distance = clamp(d, CONFIG.MinZoom, CONFIG.MaxZoom)
+	if d > 0.1 and d < maxZoom * 2 then
+		distance = clamp(d, minZoom, maxZoom)
 	end
 	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
-		distance = CONFIG.MinZoom
+		distance = minZoom
 	end
+end
+
+-- Roblox's camera keeps its own zoom, which we cannot read or set directly.
+-- Handing back after we have moved the camera out therefore snaps the player
+-- to wherever the stock camera last was -- in practice, straight back into
+-- first person, so you could never scroll out of it. Briefly raising the
+-- minimum zoom forces the stock camera out to match us, then we put the
+-- player's own limit back.
+local restoringZoom = false
+
+local function pushZoomToStockCamera()
+	if restoringZoom then
+		return
+	end
+	local original = player.CameraMinZoomDistance
+	local wanted = clamp(distance, original, player.CameraMaxZoomDistance)
+	if wanted <= original + 1e-3 then
+		return
+	end
+	restoringZoom = true
+	zoomNudgeOriginal = original
+	player.CameraMinZoomDistance = wanted
+	task.delay(0.2, function()
+		player.CameraMinZoomDistance = original
+		zoomNudgeOriginal = nil
+		restoringZoom = false
+	end)
 end
 
 local function setActive(on)
@@ -231,6 +283,7 @@ local function setActive(on)
 		-- Harmless on iPad, gives a real lock on desktop.
 		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 	else
+		pushZoomToStockCamera()
 		camera.CameraType = Enum.CameraType.Custom
 		UserInputService.MouseIconEnabled = true
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
@@ -253,7 +306,7 @@ end
 
 -- Input --------------------------------------------------------------------
 
-UserInputService.InputChanged:Connect(function(input)
+UserInputService.InputChanged:Connect(function(input, gameProcessed)
 	if input.UserInputType == Enum.UserInputType.MouseMovement then
 		local pos = Vector2.new(input.Position.X, input.Position.Y)
 		local delta = Vector2.new(input.Delta.X, input.Delta.Y)
@@ -266,15 +319,24 @@ UserInputService.InputChanged:Connect(function(input)
 			end
 		elseif lastPointerPos then
 			-- iPad path: no delta, so derive one from where the cursor went.
-			pendingDelta += (pos - lastPointerPos)
+			-- Anything implausibly large is the pointer warping (snapping onto
+			-- UI, or re-entering the window), not you moving the mouse.
+			local movement = pos - lastPointerPos
+			local viewport = camera.ViewportSize
+			if movement.Magnitude <= math.max(viewport.X, viewport.Y) * CONFIG.WarpThreshold then
+				pendingDelta += movement
+			end
 		end
 
 		lastPointerPos = pos
 		sawMouse = true
 		lastMouseTime = os.clock()
 	elseif input.UserInputType == Enum.UserInputType.MouseWheel then
-		if active then
-			distance = clamp(distance - input.Position.Z * CONFIG.ZoomStep, CONFIG.MinZoom, CONFIG.MaxZoom)
+		-- gameProcessed means the scroll belonged to a UI element, such as a
+		-- scrolling inventory list.
+		if active and not gameProcessed then
+			local minZoom, maxZoom = zoomLimits()
+			distance = clamp(distance - input.Position.Z * CONFIG.ZoomStep, minZoom, maxZoom)
 		end
 	elseif input.UserInputType == Enum.UserInputType.Touch then
 		if active and activeTouch == input and lastTouchPos then
@@ -354,6 +416,21 @@ end
 
 -- Camera -------------------------------------------------------------------
 
+-- States where the character's facing is not ours to set.
+local UNTURNABLE_STATES = {
+	[Enum.HumanoidStateType.Dead] = true,
+	[Enum.HumanoidStateType.Seated] = true,
+	[Enum.HumanoidStateType.PlatformStanding] = true,
+	[Enum.HumanoidStateType.Physics] = true,
+}
+
+local function canTurnCharacter(humanoid)
+	if humanoid.Sit or humanoid.Health <= 0 then
+		return false
+	end
+	return not UNTURNABLE_STATES[humanoid:GetState()]
+end
+
 local collisionParams = RaycastParams.new()
 collisionParams.FilterType = Enum.RaycastFilterType.Exclude
 collisionParams.IgnoreWater = true
@@ -414,6 +491,14 @@ local function updateCamera(dt)
 	local subjectPos, subjectOffset = getFocusPosition()
 	local origin = subjectPos + rotation:VectorToWorldSpace(subjectOffset)
 
+	-- A place that forces first person should stay there whatever the wheel says.
+	local minZoom, maxZoom = zoomLimits()
+	if player.CameraMode == Enum.CameraMode.LockFirstPerson then
+		distance = minZoom
+	else
+		distance = clamp(distance, minZoom, maxZoom)
+	end
+
 	local firstPerson = distance <= CONFIG.FirstPersonDistance
 
 	-- Place the camera with one offset in camera space (+X right, +Z back)
@@ -446,10 +531,12 @@ local function updateCamera(dt)
 	-- inside of it.
 	setCharacterHidden((cameraPos - subjectPos).Magnitude <= CONFIG.HideCharacterDistance)
 
-	-- Shift lock / first person: the character faces where you look.
+	-- Shift lock / first person: the character faces where you look. Not while
+	-- seated or ragdolling though -- overwriting the root part's CFrame there
+	-- fights the seat weld or the physics state and makes the character judder.
 	local humanoid = getHumanoid()
 	local root = getRootPart()
-	if humanoid and root then
+	if humanoid and root and canTurnCharacter(humanoid) then
 		humanoid.AutoRotate = false
 		local flat = Vector3.new(rotation.LookVector.X, 0, rotation.LookVector.Z)
 		if flat.Magnitude > 1e-4 then

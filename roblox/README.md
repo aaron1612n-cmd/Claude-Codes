@@ -76,9 +76,42 @@ Everything adjustable is in the `CONFIG` table at the top of the file.
 | `CameraReturnSpeed` | `6` | How fast the camera eases back out after an obstruction |
 | `HideCharacterDistance` | `1.5` | Hide your character once the camera is this close |
 | `ShowCrosshair` | `true` | Fixed centre dot to aim with |
+| `WarpThreshold` | `0.35` | Cursor jumps bigger than this fraction of the screen are ignored |
 
 If turning feels sluggish on your iPad, raise `Sensitivity` first. If you keep
 running out of room before the edge zone catches you, widen `EdgeMargin`.
+
+## Behaving like part of the game
+
+The script gets out of the way where a place has its own rules:
+
+- `Player.CameraMinZoomDistance` and `CameraMaxZoomDistance` are honoured, so a
+  game that forbids first person or caps how far you can pull out still gets
+  what it asked for.
+- `CameraMode = LockFirstPerson` stays locked in first person; the wheel can't
+  pull you out of it.
+- Scroll input that the game's own UI consumed doesn't also zoom the camera.
+- Death hands the camera straight back to Roblox's death camera.
+- Your character isn't force-turned while seated, ragdolling or dead — writing
+  to the root part in those states fights the seat weld or the physics and
+  makes the character judder.
+- Cursor jumps larger than `WarpThreshold` are discarded. iPadOS magnetises its
+  pointer onto UI elements and jumps it when it re-enters the window, and
+  without this the camera flings across the map.
+
+## Beyond this script
+
+Nothing client-side can pin the iPad cursor, but two things help a lot:
+
+- **A Bluetooth controller** sidesteps the problem entirely. Roblox's iPad
+  controller support drives the camera from the right stick as relative input,
+  with no cursor involved.
+- **Lower the iPad's tracking speed** (Settings → General → Trackpad & Mouse)
+  and raise `Sensitivity` here to compensate. Slower tracking means less screen
+  travel per inch of real movement, so you reach the border far less often.
+
+The underlying gap is Roblox's: iPadOS has exposed a pointer lock API
+(`prefersPointerLocked`) since iPadOS 14, and the Roblox client doesn't use it.
 
 ## About the cursor
 
@@ -104,11 +137,12 @@ What that means in practice:
 
 `tests/` runs the script against a stubbed Roblox runtime (Vector2/Vector3,
 enough `CFrame` math to check the camera really points where it should, signals,
-and instances). 26 checks covering the iPad path with deltas forced to zero,
+and instances). 42 checks covering the iPad path with deltas forced to zero,
 edge steering, desktop lock detection, pitch clamping, first-person
 transparency, camera handback, and camera collision — including the easing
 behaviour and the cases where a wall pushes the camera inside your own
-character.
+character — plus the game-compatibility rules above: zoom limits, forced first
+person, UI-consumed scroll, seated characters, death, and pointer warps.
 
 ```sh
 curl -sSL -o luau.zip \

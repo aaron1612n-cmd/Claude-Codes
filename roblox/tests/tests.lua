@@ -15,6 +15,14 @@ end
 local function yawOf() return math.deg(math.atan2(-camera.CFrame.LookVector.X, -camera.CFrame.LookVector.Z)) end
 local function pitchOf() return math.deg(math.asin(camera.CFrame.LookVector.Y)) end
 
+local function setShiftLockForTest(on)
+	-- The script owns shiftLockOn; drive it through the same key path.
+	for i = 1, 4 do
+		if (camera.CameraType == Enum.CameraType.Scriptable) == on then break end
+		key(Enum.KeyCode.LeftShift)
+		step(1/60)
+	end
+end
 local function angleDelta(a, b) return (b - a + 540) % 360 - 180 end
 local pass, fail = 0, 0
 local function check(name, cond, detail)
@@ -141,6 +149,104 @@ check("side offset cannot push past the wall",
 	(camera.CFrame.Position - head.Position).Magnitude)
 wallDistance = nil
 for i = 1, 120 do step(1/60) end
+
+print("== 14. a game that caps zoom is respected ==")
+flushDelays()
+player.CameraMinZoomDistance = 0.5
+player.CameraMaxZoomDistance = 6
+UserInputService.InputChanged.fire({UserInputType = Enum.UserInputType.MouseWheel,
+	Position = Vector3.new(0, 0, -50)}, false)
+for i = 1, 200 do step(1/60) end
+-- The cap applies to zoom distance; the shift lock side offset sits on top of
+-- it, exactly as it does for Roblox's own camera. sqrt(6^2 + 1.75^2) = 6.25.
+local capped = (camera.CFrame.Position - head.Position).Magnitude
+check("cannot zoom past the game's maximum", capped <= 6.26, capped)
+check("and the cap actually bit", capped < 7, capped)
+player.CameraMaxZoomDistance = 400
+
+print("== 15. a game that forbids first person is respected ==")
+player.CameraMinZoomDistance = 8
+UserInputService.InputChanged.fire({UserInputType = Enum.UserInputType.MouseWheel,
+	Position = Vector3.new(0, 0, 50)}, false)
+for i = 1, 200 do step(1/60) end
+check("cannot zoom inside the game's minimum",
+	(camera.CFrame.Position - head.Position).Magnitude >= 7.9,
+	(camera.CFrame.Position - head.Position).Magnitude)
+check("character stays visible, not hidden by a forced-in camera",
+	head.LocalTransparencyModifier == 0, head.LocalTransparencyModifier)
+player.CameraMinZoomDistance = 0.5
+
+print("== 16. scroll aimed at game UI does not zoom ==")
+for i = 1, 200 do step(1/60) end
+local beforeScroll = (camera.CFrame.Position - head.Position).Magnitude
+UserInputService.InputChanged.fire({UserInputType = Enum.UserInputType.MouseWheel,
+	Position = Vector3.new(0, 0, 5)}, true)   -- gameProcessed
+for i = 1, 60 do step(1/60) end
+check("gameProcessed scroll ignored",
+	math.abs((camera.CFrame.Position - head.Position).Magnitude - beforeScroll) < 0.01,
+	(camera.CFrame.Position - head.Position).Magnitude)
+
+print("== 17. pointer warps do not fling the camera ==")
+mouseMove(600, 400, 0, 0)
+step(1/60)
+local steadyYaw = yawOf()
+mouseMove(150, 400, 0, 0)  -- a 450px jump: pointer snapping, not a real movement
+step(1/60)
+check("large cursor jump ignored", math.abs(angleDelta(steadyYaw, yawOf())) < 1,
+	("%.2f -> %.2f"):format(steadyYaw, yawOf()))
+mouseMove(190, 400, 0, 0)  -- a normal 40px move from the new spot still works
+step(1/60)
+check("a normal move still turns the camera", math.abs(angleDelta(steadyYaw, yawOf())) > 5,
+	("%.2f -> %.2f"):format(steadyYaw, yawOf()))
+
+print("== 18. seated characters are not force-turned ==")
+UserInputService._mouseLoc = Vector2.new(600, 400)
+mouseMove(600, 400, 0, 0)
+step(1/60)
+humanoid.Sit = true
+humanoid._state = Enum.HumanoidStateType.Seated
+local seatedCFrame = root.CFrame
+mouseMove(750, 400, 0, 0)
+step(1/60)
+check("root part left alone while seated", root.CFrame == seatedCFrame)
+check("camera still turns while seated", math.abs(angleDelta(steadyYaw, yawOf())) > 0)
+humanoid.Sit = false
+humanoid._state = Enum.HumanoidStateType.Running
+mouseMove(750, 400, 0, 0)
+step(1/60)
+check("root part turns again once standing", root.CFrame ~= seatedCFrame)
+
+print("== 19. death hands the camera back ==")
+humanoid.Health = 0
+step(1/60)
+check("camera released on death", camera.CameraType == Enum.CameraType.Custom, camera.CameraType)
+check("character not left invisible on death", head.LocalTransparencyModifier == 0,
+	head.LocalTransparencyModifier)
+humanoid.Health = 100
+
+print("== 20. handing back syncs zoom so you can leave first person ==")
+-- Zoom to first person, then back out. Roblox keeps its own zoom, so without
+-- the nudge the stock camera would drag the player straight back in.
+flushDelays()
+player.CameraMinZoomDistance = 0.5
+step(1/60)                    -- alive again, so shift lock shows in the camera type
+setShiftLockForTest(false)
+flushDelays()
+player.CameraMinZoomDistance = 0.5
+camera.CFrame = CFrame.new(Vector3.new(0, 5, 0.4))   -- stock camera in first person
+step(1/60)
+check("first person engages from the stock camera", camera.CameraType == Enum.CameraType.Scriptable,
+	camera.CameraType)
+UserInputService.InputChanged.fire({UserInputType = Enum.UserInputType.MouseWheel,
+	Position = Vector3.new(0, 0, -4)}, false)   -- scroll out
+step(1/60)
+check("released back to the stock camera", camera.CameraType == Enum.CameraType.Custom,
+	camera.CameraType)
+check("stock camera pushed out so it will not snap back in",
+	player.CameraMinZoomDistance > 1, player.CameraMinZoomDistance)
+flushDelays()
+check("the player's own zoom limit is restored afterwards",
+	player.CameraMinZoomDistance == 0.5, player.CameraMinZoomDistance)
 
 print(("\n%d passed, %d failed"):format(pass, fail))
 if fail > 0 then error("test failures: " .. fail, 0) end

@@ -108,6 +108,18 @@ function signal()
 	}
 end
 
+-- task: delayed callbacks are queued so tests can run them on demand.
+pendingDelays = {}
+task = {
+	delay = function(seconds, fn) table.insert(pendingDelays, {at = seconds, fn = fn}) end,
+	defer = function(fn) table.insert(pendingDelays, {at = 0, fn = fn}) end,
+}
+function flushDelays()
+	local queued = pendingDelays
+	pendingDelays = {}
+	for _, entry in ipairs(queued) do entry.fn() end
+end
+
 -- Instances -----------------------------------------------------------------
 function newInstance(class)
 	local inst = {ClassName = class, Name = class, Parent = nil, _children = {}}

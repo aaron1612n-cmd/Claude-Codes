@@ -18,6 +18,10 @@ root.Position = Vector3.new(0, 3.5, 0); root.CFrame = CFrame.new(root.Position)
 root.LocalTransparencyModifier = 0
 humanoid = newInstance("Humanoid")
 humanoid.CameraOffset = Vector3.new(0,0,0); humanoid.AutoRotate = true; humanoid.RootPart = root
+humanoid.Health = 100
+humanoid.Sit = false
+humanoid._state = Enum.HumanoidStateType.Running
+function humanoid:GetState() return self._state end
 character = newInstance("Model")
 character._children = {Head = head, HumanoidRootPart = root, Humanoid = humanoid}
 humanoid.Parent = character; head.Parent = character; root.Parent = character
@@ -31,6 +35,7 @@ camera = {
 playerGui = newInstance("PlayerGui")
 player = {
 	Character = character, CameraMode = Enum.CameraMode.Classic,
+	CameraMinZoomDistance = 0.5, CameraMaxZoomDistance = 400,
 	CharacterAdded = signal(), _children = {PlayerGui = playerGui},
 }
 function player:WaitForChild(n) return self._children[n] end
