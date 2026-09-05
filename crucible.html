@@ -455,7 +455,7 @@ var D8=[[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]];
    ================================================================== */
 var W=0,H=0,N=0,CELL=4,CW=0,CH=0,dpr=1;
 var grid,temp,temp2,life,aux,clr,moved,vx,vy,free;
-var sim,sctx,glow,gctx,img,gimg;
+var sim,sctx,glow,gctx,glowB,gbctx,img,gimg;
 var view=$('#view'), ctx=view.getContext('2d',{alpha:false});
 var stage=$('#stage');
 
@@ -492,6 +492,7 @@ function allocate(nw,nh,keep){
   }
   sim=document.createElement('canvas'); sim.width=W; sim.height=H; sctx=sim.getContext('2d');
   glow=document.createElement('canvas'); glow.width=W; glow.height=H; gctx=glow.getContext('2d');
+  glowB=document.createElement('canvas'); glowB.width=W; glowB.height=H; gbctx=glowB.getContext('2d');
   img=sctx.createImageData(W,H); gimg=gctx.createImageData(W,H);
   var gd=gimg.data, d=img.data;
   for(var k=3;k<d.length;k+=4){ d[k]=255; gd[k]=255; }
@@ -1153,10 +1154,10 @@ function paintBuffers(){
       }
       gl = p.glow ? p.glow : clamp((temp[i]-480)/900,0,1)*0.85;
       if(t===E.SMOKE) gl=0;
-      if(gl>0){ gd[o]=r*gl*0.40; gd[o+1]=g*gl*0.30; gd[o+2]=b*gl*0.24; }
+      if(gl>0){ gd[o]=r*gl; gd[o+1]=g*gl; gd[o+2]=b*gl; }
       else { gd[o]=0; gd[o+1]=0; gd[o+2]=0; }
     }
-    d[o]=r; d[o+1]=g; d[o+2]=b;
+    d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=(mode==='mat'&&t===0)?0:255;
   }
   sctx.putImageData(img,0,0);
   gctx.putImageData(gimg,0,0);
@@ -1165,20 +1166,28 @@ function paintBuffers(){
 function draw(){
   paintBuffers();
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.fillStyle='#06090d';
+  ctx.fillStyle='#090c11';
   ctx.fillRect(0,0,CW,CH);
   var ox=0, oy=0;
   if(shake>0.2){ ox=(rnd()-0.5)*shake; oy=(rnd()-0.5)*shake; shake*=0.86; } else shake=0;
-  ctx.imageSmoothingEnabled=false;
-  ctx.drawImage(sim,ox,oy,CW,CH);
   if(bloom&&mode==='mat'){
+    gbctx.globalCompositeOperation='source-over';
+    gbctx.filter='none'; gbctx.globalAlpha=1;
+    gbctx.clearRect(0,0,W,H);
+    gbctx.globalCompositeOperation='lighter';
+    gbctx.filter='blur(1.5px)'; gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(5px)';   gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(11px)';  gbctx.globalAlpha=0.85; gbctx.drawImage(glow,0,0);
+    gbctx.filter='none';
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     ctx.imageSmoothingEnabled=true;
-    ctx.filter='blur(5px)'; ctx.globalAlpha=0.34; ctx.drawImage(glow,ox,oy,CW,CH);
-    ctx.filter='blur(16px)'; ctx.globalAlpha=0.24; ctx.drawImage(glow,ox,oy,CW,CH);
+    ctx.globalAlpha=1;
+    ctx.drawImage(glowB,ox,oy,CW,CH);
     ctx.restore();
   }
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(sim,ox,oy,CW,CH);
   if(px>=0){
     var cw=CW/W, ch=CH/H, rr=(brush+0.5)*cw;
     ctx.save();
