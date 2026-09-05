@@ -92,6 +92,8 @@ button{cursor:pointer}
 #held[aria-expanded="true"]{align-items:flex-start}
 #held[aria-expanded="true"] #heldMore{transform:rotate(180deg)}
 #held[aria-expanded="true"] #heldText s{white-space:normal;overflow:visible;text-overflow:clip}
+#held[aria-expanded="true"]{flex:1 1 100%;order:5}
+#heldText{flex:1 1 auto}
 #heldSwatch{width:22px;height:22px;border-radius:6px;flex:none;border:1px solid rgba(255,255,255,.14)}
 #heldText{min-width:0}
 #heldText b{display:block;font-size:12px;font-weight:650;line-height:1.15}
@@ -183,13 +185,14 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
   #dock{max-height:44vh}
 }
 @media (min-width:900px){
-  #app{display:grid;grid-template-columns:1fr 350px;grid-template-rows:auto 1fr;height:100%;min-height:560px}
-  #rail{grid-column:1 / -1}
-  #stage{grid-column:1;grid-row:2}
-  #quick{grid-column:2;grid-row:2;align-self:start;border-top:0;border-left:1px solid var(--rule)}
+  #app{display:grid;grid-template-columns:1fr 350px;grid-template-rows:auto auto 1fr;height:100%;min-height:560px}
+  #rail{grid-column:1 / -1;grid-row:1}
+  #stage{grid-column:1;grid-row:2 / 4}
+  #quick{grid-column:2;grid-row:2;border-top:0;border-left:1px solid var(--rule);flex-wrap:wrap}
   #tabs{display:none}
-  #dock{grid-column:2;grid-row:2;max-height:none;overflow-y:auto;border-left:1px solid var(--rule);
-    border-top:0;margin-top:51px;padding-top:12px}
+  #dock{grid-column:2;grid-row:3;max-height:none;min-height:0;overflow-y:auto;
+    border-left:1px solid var(--rule);border-top:1px solid var(--rule-soft);
+    margin-top:0;padding-top:12px}
   .tray{display:block!important;margin-bottom:18px}
   .tray + .tray{border-top:1px solid var(--rule-soft);padding-top:14px}
 }
