@@ -304,13 +304,7 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
           <button data-v="act" aria-pressed="false">Activity</button>
         </div>
       </div>
-      <div class="row"><label>Glow</label>
-        <div class="seg" id="segBloom">
-          <button data-v="2" aria-pressed="true">Blazing</button>
-          <button data-v="1" aria-pressed="false">Soft</button>
-          <button data-v="0" aria-pressed="false">Off</button>
-        </div>
-      </div>
+      <div class="row"><label for="rGlow">Glow</label><input id="rGlow" type="range" min="0" max="100" value="60"><output id="oGlow">60%</output></div>
     </div>
 
     <div class="tray" data-tray="scene">
@@ -465,7 +459,7 @@ var strokeMode='free', picking=0, anchorX=-1, anchorY=-1;
 var undoBuf=[], UNDO_MAX=8;
 var SPEEDS=[0.25,0.5,1,2,3,4], tickAcc=0;
 var paused=false, speed=1, ambient=20, wind=0, GX=0, GY=1, openEdge=0;
-var mode='mat', bloom=2, shake=0, frame=0, fps=60, last=0, collapse=1;
+var mode='mat', glowAmt=0.60, shake=0, frame=0, fps=60, last=0, collapse=1;
 var pressing=false, erasing=false, px=-1, py=-1, lx=-1, ly=-1;
 var mass=0, meanT=20, energetic=0, fastest=0;
 var stack=null, seen=null, supportAge=0;
@@ -1171,27 +1165,31 @@ function draw(){
   ctx.fillRect(0,0,CW,CH);
   var ox=0, oy=0;
   if(shake>0.2){ ox=(rnd()-0.5)*shake; oy=(rnd()-0.5)*shake; shake*=0.86; } else shake=0;
-  var lit = bloom&&mode==='mat';
+  /* One dial. The halo comes up first and keeps every colour intact; past the
+     midpoint the glow also goes over the matter, which is what burns hot things
+     out to white. All the way up is the full blaze. */
+  var under = clamp(glowAmt*1.7,0,1);
+  var over  = clamp((glowAmt-0.42)/0.58,0,1)*2;
+  var lit = glowAmt>0.005&&mode==='mat';
   if(lit){
     gbctx.globalCompositeOperation='source-over';
     gbctx.filter='none'; gbctx.globalAlpha=1;
     gbctx.clearRect(0,0,W,H);
     gbctx.globalCompositeOperation='lighter';
-    var reps = bloom===2 ? 2 : 1;
-    for(var q=0;q<reps;q++){
-      gbctx.globalAlpha=1;
-      gbctx.filter='blur(1.5px)'; gbctx.drawImage(glow,0,0);
-      gbctx.filter='blur(5px)';   gbctx.drawImage(glow,0,0);
-      gbctx.filter='blur(11px)';  gbctx.globalAlpha=0.85; gbctx.drawImage(glow,0,0);
-    }
+    gbctx.globalAlpha=1;
+    gbctx.filter='blur(1.5px)'; gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(5px)';   gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(11px)';  gbctx.globalAlpha=0.85; gbctx.drawImage(glow,0,0);
     gbctx.filter='none'; gbctx.globalAlpha=1;
   }
-  /* Soft lays the glow under the matter, so a pool keeps its own colour.
-     Blazing lays it over, which is what makes molten things burn out white. */
-  if(lit&&bloom===1) paintGlow(ox,oy);
+  if(lit&&under>0) paintGlow(ox,oy,under);
   ctx.imageSmoothingEnabled=false;
   ctx.drawImage(sim,ox,oy,CW,CH);
-  if(lit&&bloom===2) paintGlow(ox,oy);
+  if(lit&&over>0){
+    var whole=Math.floor(over), frac=over-whole, q;
+    for(q=0;q<whole;q++) paintGlow(ox,oy,1);
+    if(frac>0.01) paintGlow(ox,oy,frac);
+  }
   if(px>=0){
     var cw=CW/W, ch=CH/H, rr=(brush+0.5)*cw;
     ctx.save();
@@ -1243,11 +1241,11 @@ function probe(){
   $('#probeTemp').textContent=note;
 }
 
-function paintGlow(ox,oy){
+function paintGlow(ox,oy,a){
   ctx.save();
   ctx.globalCompositeOperation='lighter';
   ctx.imageSmoothingEnabled=true;
-  ctx.globalAlpha=1;
+  ctx.globalAlpha=a;
   ctx.drawImage(glowB,ox,oy,CW,CH);
   ctx.restore();
 }
@@ -1584,6 +1582,7 @@ $('#rSpeed').addEventListener('input',function(){
 });
 $('#rAmb').addEventListener('input',function(){ ambient=+this.value; $('#oAmb').textContent=ambient+'°'; });
 $('#rWind').addEventListener('input',function(){ wind=+this.value; $('#oWind').textContent=(wind>0?'+':'')+wind; });
+$('#rGlow').addEventListener('input',function(){ glowAmt=(+this.value)/100; $('#oGlow').textContent=this.value+'%'; });
 
 segment('#segShape',function(v){ shape=v; });
 segment('#segStroke',function(v){ strokeMode=v; });
@@ -1594,7 +1593,7 @@ segment('#segGrav',function(v){ gravityFrom(v); });
 segment('#segEdge',function(v){ openEdge=+v; });
 segment('#segCollapse',function(v){ collapse=+v; if(!collapse) free.fill(0); });
 segment('#segView',function(v){ mode=v; });
-segment('#segBloom',function(v){ bloom=+v; });
+
 
 var tabs=document.querySelectorAll('.tab');
 for(var ti=0;ti<tabs.length;ti++){
