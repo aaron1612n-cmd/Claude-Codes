@@ -89,9 +89,7 @@ button{cursor:pointer}
   padding:3px 6px;text-align:left;font:inherit;color:inherit}
 #held:hover,#held:focus-visible{border-color:var(--rule)}
 #heldMore{margin-left:auto;color:var(--dim);font-size:13px;flex:none;transition:transform .18s}
-#held[aria-expanded="true"]{align-items:flex-start}
-#held[aria-expanded="true"] #heldMore{transform:rotate(180deg)}
-#held[aria-expanded="true"] #heldText s{white-space:normal;overflow:visible;text-overflow:clip}
+
 #heldText{flex:1 1 auto}
 #heldSwatch{width:22px;height:22px;border-radius:6px;flex:none;border:1px solid rgba(255,255,255,.14)}
 #heldText{min-width:0}
@@ -155,9 +153,13 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
   color:var(--ink);border:1px solid var(--rule-soft);border-radius:8px;padding:7px;font-size:10px}
 
 /* ---------- help ---------- */
-#help{position:fixed;inset:0;background:rgba(5,8,12,.86);backdrop-filter:blur(7px);
+#help,#matSheet{position:fixed;inset:0;background:rgba(5,8,12,.86);backdrop-filter:blur(7px);
   display:none;padding:18px;overflow:auto;z-index:20}
-#help.on{display:block}
+#help.on,#matSheet.on{display:block}
+.matHead{display:flex;align-items:center;gap:11px;margin-bottom:10px}
+#msSwatch{width:34px;height:34px;border-radius:9px;flex:none;border:1px solid rgba(255,255,255,.16)}
+.matHead h2{margin:0}
+.matHead s{text-decoration:none;color:var(--dim);font-size:11px}
 .sheet{max-width:560px;margin:0 auto;background:var(--panel);border:1px solid var(--rule);
   border-radius:14px;padding:18px}
 .sheet h2{margin:0 0 4px;font-size:17px;font-weight:650}
@@ -227,10 +229,10 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
   <div id="quick">
     <button class="play" id="bPlay">Pause</button>
     <button class="mini" id="bStep" title="One tick">⏭</button>
-    <button id="held" aria-expanded="false" title="Show the full description">
+    <button id="held" title="What is this material?">
       <div id="heldSwatch"></div>
       <div id="heldText"><b id="heldName">Sand</b><s id="heldDesc"></s></div>
-      <span id="heldMore">⌄</span>
+      <span id="heldMore">ⓘ</span>
     </button>
     <button class="mini" id="bPick" title="Pick the material under the cursor" aria-pressed="false">⊙</button>
     <button class="mini" id="bUndo" title="Undo the last stroke">↶</button>
@@ -363,6 +365,17 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="matSheet" role="dialog" aria-modal="true">
+  <div class="sheet">
+    <div class="matHead"><div id="msSwatch"></div><div>
+      <h2 id="msName">Sand</h2><s id="msKind"></s></div></div>
+    <p id="msDesc"></p>
+    <h3>Properties</h3>
+    <div class="kv" id="msProps"></div>
+    <button class="close" id="msClose">Close</button>
   </div>
 </div>
 
@@ -2010,9 +2023,34 @@ $('#rLapse').addEventListener('input',function(){
   $('#oLapse').textContent=Math.round((n-k)*2)+'s ago';
   decodeBox(lapse[k]);
 });
-$('#held').addEventListener('click',function(){
-  this.setAttribute('aria-expanded', this.getAttribute('aria-expanded')==='true'?'false':'true');
-});
+function showMaterial(id){
+  var p=EL[id], rows=[], kind={powder:'Powder',liquid:'Liquid',gas:'Gas',static:'Solid',special:'Energy',none:'Tool'};
+  function row(k,v){ rows.push('<span>'+k+'</span><span>'+v+'</span>'); }
+  function cells(n){ return n+(n===1?' cell':' cells')+' a tick'; }
+  $('#msSwatch').style.background=swatchCSS(id);
+  $('#msName').textContent=p.n;
+  $('#msKind').textContent=(kind[p.t]||p.t)+' · '+p.cat+(KEYS[id]?' · key '+KEYS[id].toUpperCase():'');
+  $('#msDesc').textContent=p.desc;
+  if(p.imm) row('Density','Immovable');
+  else row('Density',p.d+' kg/m³');
+  row('Starts at',p.tmp+'°');
+  row('Carries heat',Math.round(p.cond*100)+'%');
+  if(p.melt) row('Melts at',p.melt[0]+'° into '+EL[p.melt[1]].n);
+  if(p.frz) row('Sets below',p.frz[0]+'° into '+EL[p.frz[1]].n);
+  if(p.flam){ row('Catches fire',(p.ign||0)+'° or from a flame'); if(p.burn) row('Burns for',p.burn+' ticks'); }
+  if(p.boom) row('Detonates','blast radius '+p.boom[0]+', '+p.boom[1]+'°');
+  if(p.sp) row('Spreads',cells(p.sp));
+  if(p.slide!==undefined) row('Slides',p.slide?cells(p.slide):'not at all — it holds a face');
+  if(p.life) row('Lasts',p.life+' ticks');
+  if(p.glow) row('Glows',Math.round(p.glow*100)+'%');
+  if(p.acid) row('Acid','does not touch it');
+  if(id===E.METAL||id===E.MERCURY||id===E.RELAY) row('Current','conducts a spark');
+  $('#msProps').innerHTML=rows.join('');
+  $('#matSheet').classList.add('on');
+}
+$('#held').addEventListener('click',function(){ showMaterial(sel); });
+$('#msClose').addEventListener('click',function(){ $('#matSheet').classList.remove('on'); });
+$('#matSheet').addEventListener('click',function(e){ if(e.target===this) this.classList.remove('on'); });
 $('#bPick').addEventListener('click',function(){ setPick(!picking); toast(picking?'Tap a cell to pick it up':'Back to painting'); });
 $('#bHelp').addEventListener('click',function(){ $('#help').classList.add('on'); });
 $('#bClose').addEventListener('click',function(){ $('#help').classList.remove('on'); });
