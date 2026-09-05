@@ -81,10 +81,10 @@ button{cursor:pointer}
 
 /* ---------- quick strip ---------- */
 #quick{
-  flex:0 0 auto;display:flex;align-items:center;gap:8px;
+  flex:0 0 auto;display:flex;align-items:center;flex-wrap:wrap;gap:8px;
   padding:8px 10px;border-top:1px solid var(--rule);background:var(--panel-2);
 }
-#held{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 auto;
+#held{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 100%;order:5;
   background:transparent;border:1px solid transparent;border-radius:9px;
   padding:3px 6px;text-align:left;font:inherit;color:inherit}
 #held:hover,#held:focus-visible{border-color:var(--rule)}
@@ -92,7 +92,6 @@ button{cursor:pointer}
 #held[aria-expanded="true"]{align-items:flex-start}
 #held[aria-expanded="true"] #heldMore{transform:rotate(180deg)}
 #held[aria-expanded="true"] #heldText s{white-space:normal;overflow:visible;text-overflow:clip}
-#held[aria-expanded="true"]{flex:1 1 100%;order:5}
 #heldText{flex:1 1 auto}
 #heldSwatch{width:22px;height:22px;border-radius:6px;flex:none;border:1px solid rgba(255,255,255,.14)}
 #heldText{min-width:0}
@@ -172,8 +171,7 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
    controls keep full-size tap targets instead of being squeezed off the strip. */
 @media (max-width:600px){
   .mark s{display:none}
-  #quick{flex-wrap:wrap}
-  #held{flex:1 1 100%;order:5;padding-top:2px}
+  #held{padding-top:2px}
   .mini{width:44px;height:38px}
   .play{height:38px}
   .tab{padding:11px 4px}
@@ -188,7 +186,7 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
   #app{display:grid;grid-template-columns:1fr 350px;grid-template-rows:auto auto 1fr;height:100%;min-height:560px}
   #rail{grid-column:1 / -1;grid-row:1}
   #stage{grid-column:1;grid-row:2 / 4}
-  #quick{grid-column:2;grid-row:2;border-top:0;border-left:1px solid var(--rule);flex-wrap:wrap}
+  #quick{grid-column:2;grid-row:2;border-top:0;border-left:1px solid var(--rule)}
   #tabs{display:none}
   #dock{grid-column:2;grid-row:3;max-height:none;min-height:0;overflow-y:auto;
     border-left:1px solid var(--rule);border-top:1px solid var(--rule-soft);
