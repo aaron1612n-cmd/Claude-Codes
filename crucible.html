@@ -214,13 +214,19 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
           <button data-v="3" aria-pressed="false">Four‑way</button>
         </div>
       </div>
+      <div class="row"><label>Placing</label>
+        <div class="seg" id="segFill">
+          <button data-v="0" aria-pressed="true">Replace</button>
+          <button data-v="1" aria-pressed="false">Fill gaps only</button>
+        </div>
+      </div>
       <div class="row"><label>Sky drip</label>
         <div class="seg" id="segRain">
           <button data-v="0" aria-pressed="true">Off</button>
           <button data-v="1" aria-pressed="false">Rain what I hold</button>
         </div>
       </div>
-      <p class="note">Drag on the canvas to place matter. Hold still and it keeps pouring. Right‑click (or the ✕ button) erases.</p>
+      <p class="note">Drag on the canvas to place matter. Hold still and it keeps pouring. Right‑click (or the ✕ button) erases. On <b>Fill gaps only</b> the brush drops matter into empty space and leaves whatever it drags over untouched.</p>
     </div>
 
     <div class="tray" data-tray="world">
@@ -286,6 +292,7 @@ input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:t
       <span>Space</span><span>Pause / resume</span>
       <span>. (period)</span><span>Advance one tick while paused</span>
       <span>[ and ]</span><span>Brush smaller / larger</span>
+      <span>F</span><span>Fill gaps / replace</span>
       <span>G</span><span>Cycle gravity</span>
       <span>H</span><span>Thermal view</span>
       <span>Backspace</span><span>Empty the box</span>
@@ -313,7 +320,7 @@ var EL=[
   desc:'Clears whatever you drag over.'},
  {n:'Wall',t:'static',d:9e9,c:[104,116,132],v:9,cond:.10,tmp:20,imm:1,acid:1,cat:'Tools',
   desc:'Indestructible. Ignores acid, heat, blasts and void.'},
- {n:'Sand',t:'powder',d:1600,c:[214,180,98],v:22,cond:.22,tmp:20,melt:[950,13],cat:'Powders',
+ {n:'Sand',t:'powder',d:1600,c:[214,180,98],v:22,cond:.22,tmp:20,slide:3,melt:[950,13],cat:'Powders',
   desc:'Piles into slopes. Melts into glass past 950°.'},
  {n:'Water',t:'liquid',d:1000,sp:6,c:[46,108,224],v:14,cond:.50,tmp:20,melt:[100,5],frz:[0,4],cat:'Liquids',
   desc:'Boils at 100°, freezes at 0°, drowns fire.'},
@@ -341,7 +348,7 @@ var EL=[
   desc:'Carries heat brilliantly and conducts sparks.'},
  {n:'Acid',t:'liquid',d:1150,sp:5,c:[152,255,64],v:14,cond:.35,tmp:20,glow:.35,cat:'Liquids',
   desc:'Eats almost everything. Glass and wall hold it.'},
- {n:'Gunpowder',t:'powder',d:1400,c:[72,70,80],v:12,cond:.25,tmp:20,flam:1,ign:150,boom:[9,1500],cat:'Powders',
+ {n:'Gunpowder',t:'powder',d:1400,c:[72,70,80],v:12,cond:.25,tmp:20,slide:3,flam:1,ign:150,boom:[9,1500],cat:'Powders',
   desc:'Detonates on heat, flame or a passing spark.'},
  {n:'Nitro',t:'liquid',d:1200,sp:5,c:[255,74,142],v:12,cond:.30,tmp:20,glow:.35,flam:1,ign:90,boom:[18,2600],cat:'Liquids',
   desc:'Goes off near 90°. Pools are a terrible idea.'},
@@ -368,7 +375,7 @@ var sim,sctx,glow,gctx,img,gimg;
 var view=$('#view'), ctx=view.getContext('2d',{alpha:false});
 var stage=$('#stage');
 
-var sel=E.SAND, brush=6, shape='circle', sym=0, rain=0;
+var sel=E.SAND, brush=6, shape='circle', sym=0, rain=0, fillOnly=0;
 var paused=false, speed=1, ambient=20, wind=0, GX=0, GY=1, openEdge=0;
 var mode='mat', bloom=1, shake=0, frame=0, fps=60, last=0;
 var pressing=false, erasing=false, px=-1, py=-1, lx=-1, ly=-1;
@@ -451,10 +458,27 @@ function fall(i,x,y){
   j=I(nx,ny);
   if(j<0){ if(openEdge){ grid[i]=0; life[i]=0; aux[i]=0; return true; } }
   else if(into(i,j,1)) return true;
-  var s=rnd()<0.5?1:-1;
-  j=I(nx+RX*s,ny+RY*s); if(j>=0&&into(i,j,1)) return true;
-  j=I(nx-RX*s,ny-RY*s); if(j>=0&&into(i,j,1)) return true;
-  return false;
+  /* Slide down the slope. A grain takes up to `slide` diagonal steps per tick so a
+     heap relaxes as fast as the brush fills it; at one step per tick the surface
+     lags the pour and sets into shelves. The stopping rule is unchanged, so the
+     angle of repose stays where it was. */
+  var s=rnd()<0.5?1:-1, steps=EL[grid[i]].slide||1;
+  var ci=i, cx=x, cy=y, went=false;
+  for(var k=0;k<steps;k++){
+    var ax=cx+GX+RX*s, ay=cy+GY+RY*s;
+    j=I(ax,ay);
+    if(j>=0&&into(ci,j,1)){ ci=j; cx=ax; cy=ay; }
+    else {
+      var bx=cx+GX-RX*s, by=cy+GY-RY*s;
+      j=I(bx,by);
+      if(j<0||!into(ci,j,1)) break;
+      ci=j; cx=bx; cy=by; s=-s;
+    }
+    went=true;
+    j=I(cx+GX,cy+GY);
+    if(j>=0&&into(ci,j,1)) return true;
+  }
+  return went;
 }
 function flow(i,x,y){
   if(fall(i,x,y)) return true;
@@ -736,6 +760,7 @@ function place(cx,cy,what){
       continue;
     }
     if(what===E.EMPTY){ grid[i]=0; life[i]=0; aux[i]=0; continue; }
+    if(fillOnly&&grid[i]!==0) continue;
     setCell(i,what,true);
   }
 }
@@ -1061,6 +1086,7 @@ $('#rWind').addEventListener('input',function(){ wind=+this.value; $('#oWind').t
 segment('#segShape',function(v){ shape=v; });
 segment('#segSym',function(v){ sym=+v; });
 segment('#segRain',function(v){ rain=+v; });
+segment('#segFill',function(v){ fillOnly=+v; });
 segment('#segGrav',function(v){ gravityFrom(v); });
 segment('#segEdge',function(v){ openEdge=+v; });
 segment('#segView',function(v){ mode=v; });
@@ -1133,6 +1159,13 @@ window.addEventListener('keydown',function(e){
     var kids=$('#segGrav').querySelectorAll('button');
     for(var i=0;i<kids.length;i++) kids[i].setAttribute('aria-pressed',kids[i].dataset.v===nxt?'true':'false');
     toast('Gravity: '+({d:'down',u:'up',l:'left',r:'right','0':'none'})[nxt]);
+  }
+  else if(k==='f'){
+    fillOnly=fillOnly?0:1;
+    var fk=$('#segFill').querySelectorAll('button');
+    fk[0].setAttribute('aria-pressed',fillOnly?'false':'true');
+    fk[1].setAttribute('aria-pressed',fillOnly?'true':'false');
+    toast(fillOnly?'Filling gaps only':'Replacing what the brush covers');
   }
   else if(k==='h'){
     mode = mode==='heat'?'mat':'heat';
