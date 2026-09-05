@@ -468,7 +468,7 @@ var mode='mat', bloom=1, shake=0, frame=0, fps=60, last=0, collapse=1;
 var pressing=false, erasing=false, px=-1, py=-1, lx=-1, ly=-1;
 var mass=0, meanT=20, energetic=0, fastest=0;
 var stack=null, seen=null, supportAge=0;
-var GRAV=0.34, DRAG=0.986, MAXV=9, REST=0.24;
+var GRAV=0.30, DRAG=0.93, MAXV=12, REST=0.24;   /* terminal fall ~4.3 cells/tick */
 
 /* ==================================================================
    GRID PLUMBING
@@ -1148,12 +1148,12 @@ function paintBuffers(){
       } else if(t===E.WATER&&aux[i]){
         r=r*0.8+58; g=g*0.8+58; b=b*0.85+40;
       } else {
-        var h=clamp((temp[i]-420)/900,0,1);
+        var h=clamp((temp[i]-420)/1200,0,0.72);
         if(h>0){ r=r+(255-r)*h; g=g+(212-g)*h*0.86; b=b+(126-b)*h*0.55; }
       }
       gl = p.glow ? p.glow : clamp((temp[i]-480)/900,0,1)*0.85;
       if(t===E.SMOKE) gl=0;
-      if(gl>0){ gd[o]=r*gl; gd[o+1]=g*gl; gd[o+2]=b*gl; }
+      if(gl>0){ gd[o]=r*gl*0.40; gd[o+1]=g*gl*0.30; gd[o+2]=b*gl*0.24; }
       else { gd[o]=0; gd[o+1]=0; gd[o+2]=0; }
     }
     d[o]=r; d[o+1]=g; d[o+2]=b;
@@ -1175,8 +1175,8 @@ function draw(){
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     ctx.imageSmoothingEnabled=true;
-    ctx.filter='blur(5px)'; ctx.globalAlpha=0.9;  ctx.drawImage(glow,ox,oy,CW,CH);
-    ctx.filter='blur(15px)'; ctx.globalAlpha=0.6; ctx.drawImage(glow,ox,oy,CW,CH);
+    ctx.filter='blur(5px)'; ctx.globalAlpha=0.34; ctx.drawImage(glow,ox,oy,CW,CH);
+    ctx.filter='blur(16px)'; ctx.globalAlpha=0.24; ctx.drawImage(glow,ox,oy,CW,CH);
     ctx.restore();
   }
   if(px>=0){
@@ -1333,7 +1333,7 @@ function set(x,y,t,fresh){ var i=I(x,y); if(i>=0) setCell(i,t,fresh!==false); }
 function ground(frac,top,deep){
   var base=(H*frac)|0;
   for(var x=0;x<W;x++){
-    var g=base+((Math.sin(x*0.08)*2.4)|0);
+    var g=base-((Math.abs(Math.sin(x*0.08))*2.4)|0);
     for(var y=g;y<H;y++) set(x,y, y>g+3?deep:top);
   }
   return base;
@@ -1342,7 +1342,7 @@ var SCENES={
   volcano:{title:'Volcano',blurb:'A vent at the summit that never stops giving.',run:function(){
     wipe();
     var cx=W>>1, base=(H*0.82)|0, peak=(H*0.32)|0, x, y;
-    for(x=0;x<W;x++){ var g=base+((Math.sin(x*0.07)*2)|0); for(y=g;y<H;y++) set(x,y,E.STONE); }
+    for(x=0;x<W;x++){ var g=base-((Math.abs(Math.sin(x*0.07))*2)|0); for(y=g;y<H;y++) set(x,y,E.STONE); }
     for(y=peak;y<base;y++){
       var half=(((y-peak)*0.62)|0)+3;
       for(x=cx-half;x<=cx+half;x++) set(x,y,E.STONE);
@@ -1502,6 +1502,7 @@ function buildScenes(){
   host.addEventListener('click',function(e){
     var b=e.target.closest('.scene'); if(!b) return;
     snapshot();
+    setRain(0);            /* a scene that wants rain turns it back on itself */
     SCENES[b.dataset.k].run();
     paused=false; $('#bPlay').textContent='Pause';
     toast(SCENES[b.dataset.k].title+' loaded');
