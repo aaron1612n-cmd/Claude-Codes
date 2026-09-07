@@ -139,6 +139,7 @@ local function exitSink()
     end)
 end
 
+-- keyboard
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == SINK_KEY then enterSink() end
@@ -146,6 +147,40 @@ end)
 
 UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == SINK_KEY then exitSink() end
+end)
+
+-- mobile toggle button
+local gui    = Instance.new("ScreenGui")
+gui.Name     = "InvisibleGui"
+gui.ResetOnSpawn = false
+gui.Parent   = player.PlayerGui
+
+local btn         = Instance.new("TextButton")
+btn.Size          = UDim2.new(0, 90, 0, 90)
+btn.Position      = UDim2.new(1, -110, 1, -120)
+btn.AnchorPoint   = Vector2.new(0, 0)
+btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+btn.TextColor3    = Color3.fromRGB(255, 255, 255)
+btn.Text          = "HIDE"
+btn.Font          = Enum.Font.GothamBold
+btn.TextSize      = 18
+btn.BorderSizePixel = 0
+btn.Parent        = gui
+
+local corner      = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 16)
+corner.Parent     = btn
+
+btn.MouseButton1Click:Connect(function()
+    if sunk then
+        exitSink()
+        btn.Text = "HIDE"
+        btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    else
+        enterSink()
+        btn.Text = "SHOW"
+        btn.BackgroundColor3 = Color3.fromRGB(180, 30, 30)
+    end
 end)
 
 player.CharacterAdded:Connect(setup)
