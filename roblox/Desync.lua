@@ -21,12 +21,22 @@
 
     Modes
     -----
-    ANCHOR  serverCF is pinned where you switched on. Maximum desync, and the
-            gap grows without bound until MaxGap reins it in.
+    SHADOW  A rigid offset from where you actually are. The gap is constant,
+            so serverCF moves at exactly your speed and no catch-up burst
+            exists to be detected. Small enough to stay inside a game's
+            interaction range, so your own attacks and interactions still
+            land. Default.
     TRAIL   serverCF follows the path you actually walked, TrailLag seconds
             behind. Every position the server sees is one you genuinely
             occupied, in the order you occupied it — there is no artificial
-            movement to detect at all. Smaller gap, far quieter.
+            movement to detect at all.
+    ANCHOR  serverCF is pinned where you switched on. Biggest gap, loudest:
+            its leash has to accelerate from a standstill to reel you back in,
+            and that acceleration is a speed signature the others lack.
+
+    The server has one position for you, and range checks measure from it, so
+    any gap large enough to stop incoming damage breaks your own outgoing
+    reach by the same distance. SHADOW exists to keep the gap under that line.
 
     MaxGap is the leash. Games that snap you back are measuring the distance
     between where they think you are and where you claim to be; keeping the
@@ -82,7 +92,14 @@ local CONFIG = {
 
     -- Absolute floor, so a WalkSpeed of 0 (frozen, seated, ragdolled) cannot
     -- stall a resync at zero speed forever.
-    MinSpeedFloor = 8,   -- studs/s
+    --
+    -- Keep this BELOW the slowest speed the game can legitimately put you at,
+    -- or it becomes the speed leak it exists to prevent. Games stack slow
+    -- modifiers: a survival game measured here multiplies WalkSpeed by terrain
+    -- (bedrock 0.35) and then divides by 3 for crouching, which turns a base
+    -- of 16 into 1.87 studs/s. A floor of 8 would have moved serverCF at over
+    -- four times the legitimate speed in that state.
+    MinSpeedFloor = 1,   -- studs/s
 
     -- Hard ceiling on the speed serverCF will ever match, so a one-frame
     -- physics glitch or a game-scripted teleport can't unlock an arbitrarily
