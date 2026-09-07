@@ -26,6 +26,7 @@ Per-cell arrays, all length `N`:
 | `free` | Uint8 | detached from support, falls even if static |
 | `openAir` | Uint8 | reachable from outside — the confinement test |
 | `lbody` | Int32 | connected-liquid-body id |
+| `ldon` / `ldonN` | Int32 / Uint8 | up to `LDON` donor cells per liquid body — see levels |
 | `lite` | Float32 | light level |
 | `comp` | Int32 | connected-chunk id for detached solids |
 | `stack` / `seen` | Int32 / Uint8 | scratch for every flood fill |
@@ -48,7 +49,7 @@ new use without checking this table will corrupt an existing one.
 | Metal, Mercury, Relay | spark cooldown, counts down |
 | Spark | which host it is riding: 0 metal, 8 relay, 9 mercury |
 | Battery | countdown to next pulse |
-| Steam | accumulated pressure |
+| Steam | accumulated pressure (`life` holds its condensation score) |
 | Pump, Piston | facing, 1=up 2=right 3=down 4=left, indexed into `DIRV` |
 
 `setCell()` zeroes `aux`, so anything that needs it set must set it *after*.
@@ -74,8 +75,16 @@ if rain        drip()
 ```
 
 Rows are walked *from* the gravity direction so falling matter does not get
-carried multiple cells in one tick, and the direction of travel within a row
-alternates on `(frame + y) & 1` to avoid a left/right bias.
+carried multiple cells in one tick, and the whole pass alternates direction on
+`frame & 1` to avoid a left/right bias.
+
+It used to alternate on `(frame + y) & 1` — per row as well as per frame. That
+cancels the bias equally well but makes neighbouring rows of one body mirror each
+other: the edge grain slides out on one row and holds on the next, all the way up.
+What you see is a vertical dotted line down the side of anything in motion. Peak
+enclosed voids in a dropped block of sand went 33 → 7 when this changed, and a
+steady pour 8 → 0, with the pile's centroid still landing within 0.04 cells of the
+nozzle. **Do not put the `+ y` back.**
 
 ## `cellStep` order, per cell
 
@@ -105,9 +114,20 @@ and cells teleport their properties.
   surface lags the pour and sets into visible shelves.
 - `flow()` — `fall()`, then the liquid-level climb, then sideways up to `sp`.
 - `rise()` — gases, biased by draught and the air field.
-- `ballistic()` — for anything above ~1.1 cells/tick. Walks the velocity vector
-  a cell at a time, hands 45% of its momentum to whatever stops it, and bounces
-  with `REST`.
+- `ballistic(i,x,y,mode)` — for anything above ~1.1 cells/tick. Walks the velocity
+  vector a cell at a time, hands on momentum scaled by the mass ratio (45% at
+  most), and bounces with `REST`. `mode` is the density rule for `into()`: `+1`
+  for falling matter, `-1` for gases, which have to swap with the heavier stuff
+  they climb through.
+
+  **It returns whether the cell actually travelled, not whether it hit
+  something.** A cell blocked on its first step has not moved, and the caller must
+  still be free to try `fall`/`flow`/`rise`. Returning `true` there was why steam
+  in contact with anything solid never rose: it spent every tick bouncing in
+  place and never reached `rise()`.
+
+  Only a mover denser than 400 can cut a static cell loose. Without that, a hot
+  gas knocked a sealed stone vessel apart from the inside.
 
 Constants: `GRAV 0.30`, `DRAG 0.93` (together a terminal fall of ~4.2
 cells/tick, which is what keeps a pour looking continuous), `MAXV 12` so an
@@ -115,14 +135,48 @@ impulse can exceed terminal and decay back, `REST 0.24`.
 
 ## Liquid levels
 
-`liquidLevel()` flood-fills each connected body of one liquid and records the
-highest row it reaches. In `flow()`, a cell more than one row below its own
-body's surface may climb — and when it does, **the whole column above it shifts
-up by one in the same operation**. Lifting a single cell and leaving a hole
-beneath it just drops it back next tick; that oscillation is why the first
-attempt appeared to do nothing.
+`liquidLevel()` flood-fills each connected body of one liquid, records the highest
+row it reaches in `lsurf`, and keeps the highest `LDON` (8) *free-surface* cells of
+that body in `ldon` as donors.
 
-## Confinement and steam
+In `flow()`, a runny liquid (`sp >= 4`, so water, oil, acid, nitro, mercury —
+lava, virus and foam are viscous and are left out on purpose) whose local surface
+sits more than a row below `lsurf` pulls one donor down into the empty cell above
+it. The high side drops a cell, the low side rises a cell, nothing is created or
+destroyed. A donor must still be a free surface, must be genuinely higher, and
+must be *at rest* — otherwise the pool reaches up and eats the falling stream
+feeding it, since the head of a stream is a free surface too.
+
+The earlier version lifted the local cell and shifted the column beneath it up to
+fill in behind. That leaves a void at the foot of the column, and **a void under
+water floats**: the cell above drops into it, then the next, and six ticks later
+the void is back at the surface and the risen cell has fallen back. Net transport
+was near zero, and the void bubbling up through the body was itself the dotted
+line people saw along a pool's floor. Measured: a U-tube with a 46-cell head
+difference closed 4 cells in 1200 ticks before, and levels to within 1 cell by
+tick 400 now; a basin's surface spread went 16 → 1 cell.
+
+## Steam
+
+Steam is the one material with a two-stage state change, because a plain
+threshold made it useless. A gas surrounded by 20° air sheds roughly a tenth of
+its heat per tick, so `frz:[95,3]` turned a whole plume back into water within
+about a dozen ticks of it being made.
+
+Instead: `cond` is low (.11) so it holds its heat, `cellStep`'s gas branch gives
+it lift proportional to how far above ambient it is (capped, so a plume shoots up
+and a spent one loiters), and `steamStep()` scores condensation into `life`.
+Contact with something cold does most of the work — steam beads on a cold surface
+the way it does on a window — and cold air alone is slow. At 60 the cell becomes
+water and keeps its temperature.
+
+Measured: a 96-cell blob rose 0.24 cells/tick and was fully water by tick 15
+before; it now rises 1.5 cells/tick, is still steam at tick 50, and has condensed
+back to exactly 96 cells of water by tick 100. Mass is conserved in both
+directions — worth re-checking after any change here, since a boil/condense loop
+that is not 1:1 will either flood or drain the world.
+
+## Confinement and steam pressure
 
 `airScan()` floods inward from the four edges through anything a gas could
 move along. A cell it never reaches is sealed. Steam only accumulates pressure
@@ -188,3 +242,11 @@ Without that ordering Ctrl+Z selects mercury instead of undoing.
   scene loaded afterwards came with weather. Scene loading clears it now.
 - Thermite floated on the lava it created until its density was raised above
   lava's, so it could sink and cut.
+- `ballistic()` returned `true` when it was blocked without moving, which ate the
+  caller's chance to `rise()`. Steam next to anything solid never went up.
+- The Fire brush replaced whatever it was painted over. Dragging it across a
+  steel wall deleted 1140 of 3000 cells in one stroke, which is indistinguishable
+  from fire melting steel on contact. Fire now heats what it touches instead:
+  steel glows, wood catches, gunpowder goes off. (Plain fire cannot melt metal by
+  conduction — it tops out near 700° against a 1450° melting point. Every report
+  of "fire melts metal" is this brush.)

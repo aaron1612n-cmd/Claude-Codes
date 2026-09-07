@@ -11,16 +11,25 @@ build step, no network calls. Open the file in a browser and it runs.
 It is also published as an Artifact at
 <https://claude.ai/code/artifact/93fd7eae-bd32-4853-8f06-ee2ebb227978>.
 
-## The one open thread
+## The open thread
 
-**The last thing said in the previous session was "there are many problems",
-and the list was never given.** Nothing has been done about it. That is the
-first thing to ask about. The PR is deliberately still a draft to absorb it.
+The list of problems finally arrived and has been worked through:
 
-Do not assume the problems are the ones already fixed below — they are
-probably new, and probably things only visible while actually playing on a
-real device (the previous session's testing was headless Chromium, which
-catches physics and layout but not feel).
+| reported | what it actually was | now |
+|---|---|---|
+| steam does not float up when a group of it touches something anchored | `ballistic()` returned `true` when it was blocked without moving, so steam never reached `rise()` | a 96-cell blob rises 1.5 cells/tick, was 0.24 |
+| steam instantly turns back to water | condensation was a plain 95° threshold, and a gas in 20° air loses a tenth of its heat per tick | still steam at tick 50, fully condensed by 100, mass conserved |
+| steam does not react realistically | no buoyancy from temperature, condensation ignored what it was touching | lift scales with heat; it beads on cold surfaces first |
+| dotted lines between bodies of cells | two separate causes: per-row scan alternation, and the liquid-level column shift leaving a floating void | peak voids 33 → 7 in sand, 11 → 1 in water |
+| fire instantly melts metal | the Fire brush *replaced* what it was painted over — 1140 of 3000 steel cells per stroke | fire heats instead; the steel glows and stays |
+
+Two more found while in there: water never actually found its level (a U-tube
+closed 4 cells of a 46-cell difference in 1200 ticks), and a gas could knock a
+sealed stone vessel apart from the inside because momentum transfer ignored mass.
+Both fixed; see CRUCIBLE-INTERNALS.md.
+
+Still worth doing: none of this was played on a real device. Headless Chromium
+catches physics and layout, not feel.
 
 ## Repo layout
 
@@ -72,6 +81,11 @@ codes, and a timelapse.
 
 Defaults worth knowing: **Rigid** (structural collapse off), **Convection on**,
 **Lighting on**, **Glow 60%**, sound off.
+
+Note that with collapse off, `supportScan()` returns immediately and so `free[]`
+is never cleared. Anything a blast cuts loose stays loose for good. That is
+deliberate — debris should keep falling in Rigid mode — but it does mean `free`
+is one-way there.
 
 ## Testing
 
