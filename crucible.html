@@ -1,0 +1,2317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b1016">
+<title>Crucible — a sandbox for matter and heat</title>
+<style>
+:root{
+  --bg:#0b1016;
+  --stage:#06090d;
+  --panel:#121924;
+  --panel-2:#0e141d;
+  --rule:#1f2b39;
+  --rule-soft:#18222e;
+  --ink:#dbe5ef;
+  --dim:#71849a;
+  --ember:#f5793b;
+  --sea:#79d6c2;
+  --sel:#f5793b;
+  --pad:10px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;min-height:100%;background:var(--bg);color:var(--ink);overscroll-behavior:none}
+body{
+  font:12px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,system-ui,sans-serif;
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+  touch-action:manipulation;
+}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+
+#app{display:flex;flex-direction:column;height:100%;min-height:560px;overflow:hidden}
+
+/* ---------- instrument rail ---------- */
+#rail{
+  display:flex;align-items:center;gap:12px;
+  padding:8px 12px;border-bottom:1px solid var(--rule);
+  background:linear-gradient(180deg,#131b26,#0c1219);
+  flex:0 0 auto;
+}
+.mark{display:flex;align-items:baseline;gap:7px;min-width:0}
+.mark b{font-weight:650;font-size:13px;letter-spacing:.02em}
+.mark s{text-decoration:none;color:var(--dim);font-size:10.5px;white-space:nowrap}
+#gauges{margin-left:auto;display:flex;gap:14px;align-items:center}
+.g{display:flex;flex-direction:column;align-items:flex-end;line-height:1.1}
+.g u{text-decoration:none;color:var(--dim);font-size:9px;letter-spacing:.03em}
+.g v{font-size:12px;font-weight:600}
+#railBtns{display:flex;gap:6px}
+.icon{
+  width:30px;height:28px;border:1px solid var(--rule);border-radius:8px;
+  background:var(--panel-2);display:grid;place-items:center;font-size:13px;line-height:1;
+}
+.icon:active{transform:translateY(1px)}
+.icon[aria-pressed="true"]{border-color:var(--sel);background:color-mix(in srgb,var(--sel) 18%, var(--panel-2))}
+.zoomval{color:var(--dim);font-size:10px;min-width:26px;text-align:center}
+
+/* ---------- stage ---------- */
+#stage{position:relative;flex:1 1 auto;min-height:150px;background:var(--stage);overflow:hidden}
+#view{width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
+#vignette{position:absolute;inset:0;pointer-events:none;
+  box-shadow:inset 0 0 90px 10px rgba(0,0,0,.75), inset 0 0 0 1px rgba(255,255,255,.03)}
+#probe{
+  position:absolute;left:10px;bottom:10px;pointer-events:none;
+  background:rgba(10,15,21,.82);border:1px solid var(--rule);border-radius:8px;
+  padding:5px 9px;line-height:1.25;backdrop-filter:blur(6px);
+  opacity:0;transition:opacity .18s;
+}
+#probe.on{opacity:1}
+#probe b{display:block;font-size:11px;font-weight:650}
+#probe s{display:block;text-decoration:none;font-size:10px;color:var(--dim)}
+#toast{
+  position:absolute;left:50%;top:12px;transform:translateX(-50%) translateY(-140%);
+  background:rgba(10,15,21,.92);border:1px solid var(--rule);border-radius:999px;
+  padding:6px 14px;font-size:11px;color:var(--ink);pointer-events:none;
+  transition:transform .28s cubic-bezier(.2,.8,.3,1),opacity .28s;opacity:0;white-space:nowrap;
+  backdrop-filter:blur(6px);
+}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+/* ---------- quick strip ---------- */
+#quick{
+  flex:0 0 auto;display:flex;align-items:center;flex-wrap:wrap;gap:8px;
+  padding:8px 10px;border-top:1px solid var(--rule);background:var(--panel-2);
+}
+#held{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 100%;order:5;
+  background:transparent;border:1px solid transparent;border-radius:9px;
+  padding:3px 6px;text-align:left;font:inherit;color:inherit}
+#held:hover,#held:focus-visible{border-color:var(--rule)}
+#heldMore{margin-left:auto;color:var(--dim);font-size:13px;flex:none;transition:transform .18s}
+
+#heldText{flex:1 1 auto}
+#heldSwatch{width:22px;height:22px;border-radius:6px;flex:none;border:1px solid rgba(255,255,255,.14)}
+#heldText{min-width:0}
+#heldText b{display:block;font-size:12px;font-weight:650;line-height:1.15}
+#heldText s{display:block;text-decoration:none;color:var(--dim);font-size:10px;line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.play{
+  height:34px;padding:0 14px;border-radius:9px;border:1px solid var(--sel);
+  background:color-mix(in srgb,var(--sel) 14%, transparent);color:var(--ink);
+  font-weight:600;letter-spacing:.02em;flex:none;
+}
+.mini{height:34px;width:38px;border-radius:9px;border:1px solid var(--rule);background:var(--panel);flex:none}
+
+/* ---------- dock ---------- */
+#tabs{flex:0 0 auto;display:flex;gap:2px;padding:0 8px;background:var(--panel-2);border-top:1px solid var(--rule-soft)}
+.tab{
+  flex:1 1 0;padding:9px 4px;border:0;background:transparent;color:var(--dim);
+  font-size:11px;border-bottom:2px solid transparent;
+}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--sel)}
+#dock{flex:0 0 auto;background:var(--panel-2);max-height:38vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:10px 10px 16px;border-top:1px solid var(--rule-soft)}
+.tray{display:none}
+.tray.on{display:block}
+
+.group{margin:0 0 12px}
+.group h4{margin:0 0 6px;font-size:10px;font-weight:600;color:var(--dim);letter-spacing:.02em}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:5px}
+.sw{
+  display:flex;align-items:center;gap:7px;padding:6px 7px;border-radius:8px;
+  border:1px solid var(--rule-soft);background:var(--panel);text-align:left;font-size:11px;
+  line-height:1;overflow:hidden;
+}
+.sw i{width:11px;height:11px;border-radius:3px;flex:none;box-shadow:0 0 9px -1px currentColor}
+.sw em{font-style:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw kbd{margin-left:auto;color:var(--dim);font-size:9px;font-family:inherit}
+.sw[aria-pressed="true"]{border-color:var(--sw);background:color-mix(in srgb,var(--sw) 13%, var(--panel));box-shadow:0 0 0 1px color-mix(in srgb,var(--sw) 40%, transparent)}
+
+.row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--rule-soft)}
+.row:last-child{border-bottom:0}
+.row label{flex:0 0 88px;color:var(--dim);font-size:11px}
+.row output{flex:0 0 46px;text-align:right;font-size:11px;color:var(--ink)}
+input[type=range]{flex:1 1 auto;accent-color:var(--sel);height:22px;background:transparent}
+.seg{display:flex;gap:4px;flex-wrap:wrap;flex:1 1 auto}
+.seg button{
+  padding:6px 10px;border-radius:7px;border:1px solid var(--rule-soft);background:var(--panel);
+  font-size:11px;color:var(--dim);
+}
+.seg button[aria-pressed="true"]{border-color:var(--sel);color:var(--ink);background:color-mix(in srgb,var(--sel) 12%, var(--panel))}
+.scenes{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
+.scene{padding:9px;border-radius:9px;border:1px solid var(--rule-soft);background:var(--panel);text-align:left}
+.scene b{display:block;font-size:11.5px;font-weight:600;margin-bottom:2px}
+.scene s{display:block;text-decoration:none;color:var(--dim);font-size:9.5px;line-height:1.3}
+.note{color:var(--dim);font-size:10.5px;margin:8px 2px 0;line-height:1.5}
+.slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:6px}
+.slot{display:flex;gap:5px}
+.slot button{flex:1 1 auto;padding:8px 6px;border-radius:8px;border:1px solid var(--rule-soft);
+  background:var(--panel);font-size:10.5px;color:var(--ink)}
+.slot button.empty{color:var(--dim)}
+#codeBox{width:100%;height:62px;margin-top:8px;resize:vertical;background:var(--panel);
+  color:var(--ink);border:1px solid var(--rule-soft);border-radius:8px;padding:7px;font-size:10px}
+
+/* ---------- help ---------- */
+#help,#matSheet{position:fixed;inset:0;background:rgba(5,8,12,.86);backdrop-filter:blur(7px);
+  display:none;padding:18px;overflow:auto;z-index:20}
+#help.on,#matSheet.on{display:block}
+.matHead{display:flex;align-items:center;gap:11px;margin-bottom:10px}
+#msSwatch{width:34px;height:34px;border-radius:9px;flex:none;border:1px solid rgba(255,255,255,.16)}
+.matHead h2{margin:0}
+.matHead s{text-decoration:none;color:var(--dim);font-size:11px}
+.sheet{max-width:560px;margin:0 auto;background:var(--panel);border:1px solid var(--rule);
+  border-radius:14px;padding:18px}
+.sheet h2{margin:0 0 4px;font-size:17px;font-weight:650}
+.sheet p{margin:0 0 14px;color:var(--dim);font-size:11.5px;line-height:1.6}
+.sheet h3{margin:16px 0 6px;font-size:11px;color:var(--sea);font-weight:600}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:11px}
+.kv span:nth-child(odd){color:var(--dim)}
+.close{margin-top:18px;width:100%;height:38px;border-radius:9px;border:1px solid var(--rule);background:var(--panel-2)}
+
+/* Phones get the same reach as a desktop: the readout drops to its own row so the
+   controls keep full-size tap targets instead of being squeezed off the strip. */
+@media (max-width:600px){
+  .mark s{display:none}
+  #held{padding-top:2px}
+  .mini{width:44px;height:38px}
+  .play{height:38px}
+  .tab{padding:11px 4px}
+  .sw{padding:8px 7px;min-height:36px}
+  .seg button{padding:9px 11px;min-height:36px}
+  .icon{width:38px;height:36px;font-size:15px}
+  .scene{padding:11px}
+  #slotList button{min-height:38px}
+  #dock{max-height:44vh}
+}
+@media (min-width:900px){
+  #app{display:grid;grid-template-columns:1fr 350px;grid-template-rows:auto auto 1fr;height:100%;min-height:560px}
+  #rail{grid-column:1 / -1;grid-row:1}
+  #stage{grid-column:1;grid-row:2 / 4}
+  #quick{grid-column:2;grid-row:2;border-top:0;border-left:1px solid var(--rule)}
+  #tabs{display:none}
+  #dock{grid-column:2;grid-row:3;max-height:none;min-height:0;overflow-y:auto;
+    border-left:1px solid var(--rule);border-top:1px solid var(--rule-soft);
+    margin-top:0;padding-top:12px}
+  .tray{display:block!important;margin-bottom:18px}
+  .tray + .tray{border-top:1px solid var(--rule-soft);padding-top:14px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="rail">
+    <div class="mark"><b>Crucible</b><s>matter &amp; heat, one cell at a time</s></div>
+    <div id="gauges">
+      <div class="g"><u>matter</u><v id="gMass">0</v></div>
+      <div class="g"><u>mean heat</u><v id="gTemp">20°</v></div>
+      <div class="g"><u>fps</u><v id="gFps">60</v></div>
+    </div>
+    <div id="railBtns">
+      <button class="icon" id="bZoomOut" title="Zoom out">−</button>
+      <span id="oZoom" class="zoomval">1×</span>
+      <button class="icon" id="bZoomIn" title="Zoom in">+</button>
+      <button class="icon" id="bPan" title="Drag to move the view" aria-pressed="false">✥</button>
+      <button class="icon" id="bSound" title="Sound">🔇</button>
+      <button class="icon" id="bHelp" title="How this works">?</button>
+    </div>
+  </div>
+
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="vignette"></div>
+    <div id="probe"><b id="probeName">—</b><s id="probeTemp"></s></div>
+    <div id="toast"></div>
+  </div>
+
+  <div id="quick">
+    <button class="play" id="bPlay">Pause</button>
+    <button class="mini" id="bStep" title="One tick">⏭</button>
+    <button id="held" title="What is this material?">
+      <div id="heldSwatch"></div>
+      <div id="heldText"><b id="heldName">Sand</b><s id="heldDesc"></s></div>
+      <span id="heldMore">ⓘ</span>
+    </button>
+    <button class="mini" id="bPick" title="Pick the material under the cursor" aria-pressed="false">⊙</button>
+    <button class="mini" id="bUndo" title="Undo the last stroke">↶</button>
+    <button class="mini" id="bWipe" title="Empty the box">✕</button>
+  </div>
+
+  <div id="tabs" role="tablist">
+    <button class="tab" role="tab" data-tray="mat" aria-selected="true">Materials</button>
+    <button class="tab" role="tab" data-tray="brush" aria-selected="false">Brush</button>
+    <button class="tab" role="tab" data-tray="world" aria-selected="false">World</button>
+    <button class="tab" role="tab" data-tray="scene" aria-selected="false">Scenes</button>
+  </div>
+
+  <div id="dock">
+    <div class="tray on" data-tray="mat" id="trayMat"></div>
+
+    <div class="tray" data-tray="brush">
+      <div class="row"><label for="rSize">Size</label><input id="rSize" type="range" min="1" max="34" value="6"><output id="oSize">6</output></div>
+      <div class="row"><label>Shape</label>
+        <div class="seg" id="segShape">
+          <button data-v="circle" aria-pressed="true">Round</button>
+          <button data-v="square" aria-pressed="false">Square</button>
+          <button data-v="spray" aria-pressed="false">Spray</button>
+        </div>
+      </div>
+      <div class="row"><label>Stroke</label>
+        <div class="seg" id="segStroke">
+          <button data-v="free" aria-pressed="true">Freehand</button>
+          <button data-v="line" aria-pressed="false">Line</button>
+          <button data-v="box" aria-pressed="false">Box</button>
+        </div>
+      </div>
+      <div class="row"><label>Machine faces</label>
+        <div class="seg" id="segFace">
+          <button data-v="1" aria-pressed="false">Up</button>
+          <button data-v="2" aria-pressed="false">Right</button>
+          <button data-v="3" aria-pressed="true">Down</button>
+          <button data-v="4" aria-pressed="false">Left</button>
+        </div>
+      </div>
+      <div class="row"><label>Mirror</label>
+        <div class="seg" id="segSym">
+          <button data-v="0" aria-pressed="true">Off</button>
+          <button data-v="1" aria-pressed="false">Left/right</button>
+          <button data-v="2" aria-pressed="false">Up/down</button>
+          <button data-v="3" aria-pressed="false">Four‑way</button>
+        </div>
+      </div>
+      <div class="row"><label>Placing</label>
+        <div class="seg" id="segFill">
+          <button data-v="0" aria-pressed="true">Replace</button>
+          <button data-v="1" aria-pressed="false">Fill gaps only</button>
+        </div>
+      </div>
+      <div class="row"><label>Sky drip</label>
+        <div class="seg" id="segRain">
+          <button data-v="0" aria-pressed="true">Off</button>
+          <button data-v="1" aria-pressed="false">Rain what I hold</button>
+        </div>
+      </div>
+      <p class="note">Drag on the canvas to place matter. Hold still and it keeps pouring. Right‑click (or the ✕ button) erases. On <b>Fill gaps only</b> the brush drops matter into empty space and leaves whatever it drags over untouched.</p>
+    </div>
+
+    <div class="tray" data-tray="world">
+      <div class="row"><label for="rSpeed">Tick rate</label><input id="rSpeed" type="range" min="0" max="5" value="2"><output id="oSpeed">1×</output></div>
+      <div class="row"><label for="rAmb">Room heat</label><input id="rAmb" type="range" min="-60" max="400" value="20"><output id="oAmb">20°</output></div>
+      <div class="row"><label for="rWind">Draught</label><input id="rWind" type="range" min="-3" max="3" value="0"><output id="oWind">0</output></div>
+      <div class="row"><label>Gravity</label>
+        <div class="seg" id="segGrav">
+          <button data-v="d" aria-pressed="true">Down</button>
+          <button data-v="u" aria-pressed="false">Up</button>
+          <button data-v="l" aria-pressed="false">Left</button>
+          <button data-v="r" aria-pressed="false">Right</button>
+          <button data-v="0" aria-pressed="false">None</button>
+        </div>
+      </div>
+      <div class="row"><label>Lighting</label>
+        <div class="seg" id="segLight">
+          <button data-v="1" aria-pressed="true">On</button>
+          <button data-v="0" aria-pressed="false">Off</button>
+        </div>
+      </div>
+      <div class="row"><label>Air</label>
+        <div class="seg" id="segConvect">
+          <button data-v="1" aria-pressed="true">Convection</button>
+          <button data-v="0" aria-pressed="false">Still</button>
+        </div>
+      </div>
+      <div class="row"><label>Structures</label>
+        <div class="seg" id="segCollapse">
+          <button data-v="0" aria-pressed="true">Rigid</button>
+          <button data-v="1" aria-pressed="false">Collapse</button>
+        </div>
+      </div>
+      <div class="row"><label>Walls</label>
+        <div class="seg" id="segEdge">
+          <button data-v="0" aria-pressed="true">Sealed box</button>
+          <button data-v="1" aria-pressed="false">Open edges</button>
+        </div>
+      </div>
+      <div class="row"><label>View</label>
+        <div class="seg" id="segView">
+          <button data-v="mat" aria-pressed="true">Material</button>
+          <button data-v="heat" aria-pressed="false">Thermal</button>
+          <button data-v="vel" aria-pressed="false">Velocity</button>
+          <button data-v="act" aria-pressed="false">Activity</button>
+        </div>
+      </div>
+      <div class="row"><label for="rGlow">Glow</label><input id="rGlow" type="range" min="0" max="100" value="60"><output id="oGlow">60%</output></div>
+    </div>
+
+    <div class="tray" data-tray="scene">
+      <div class="scenes" id="sceneList"></div>
+      <p class="note">Scenes replace whatever is in the box. Undo takes back the last eight things you did.</p>
+
+      <div class="group" style="margin-top:14px">
+        <h4>Timelapse</h4>
+        <div class="row"><label for="rLapse">Rewind</label><input id="rLapse" type="range" min="0" max="0" value="0"><output id="oLapse">live</output></div>
+        <p class="note">The box is photographed every couple of seconds. Drag to walk back through the last few minutes; painting again carries on from wherever you stopped.</p>
+      </div>
+
+      <div class="group" style="margin-top:14px">
+        <h4>Your builds</h4>
+        <div class="slots" id="slotList"></div>
+        <p class="note">Slots live in this browser only. To move a build somewhere else, copy the code below and paste it back in on the other device.</p>
+        <textarea id="codeBox" spellcheck="false" placeholder="Paste a Crucible code here, then press Load code"></textarea>
+        <div class="seg" style="margin-top:6px">
+          <button id="bCopy">Put code in the box</button>
+          <button id="bLoadCode">Load code</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="matSheet" role="dialog" aria-modal="true">
+  <div class="sheet">
+    <div class="matHead"><div id="msSwatch"></div><div>
+      <h2 id="msName">Sand</h2><s id="msKind"></s></div></div>
+    <p id="msDesc"></p>
+    <h3>Properties</h3>
+    <div class="kv" id="msProps"></div>
+    <button class="close" id="msClose">Close</button>
+  </div>
+</div>
+
+<div id="help" role="dialog" aria-modal="true">
+  <div class="sheet">
+    <h2>How Crucible works</h2>
+    <p>Every pixel is a cell holding one material, one temperature and a velocity. Each tick, cells fall, float, swap by density, trade heat with their neighbours, and change state when they get hot or cold enough. Nothing is scripted — fire spreading through a forest is just wood crossing its ignition point, and a roof coming down is just stone that stopped being held up.</p>
+
+    <h3>Chains worth trying</h3>
+    <div class="kv">
+      <span>Sand + lava</span><span>Sand melts past 950° and cools into glass</span>
+      <span>Water + lava</span><span>Steam bursts, lava chills into stone</span>
+      <span>Steam</span><span>Rises, cools, condenses, rains back down</span>
+      <span>Metal + spark</span><span>A pulse races the wire and lights fuses</span>
+      <span>Plant + water</span><span>It drinks and spreads, then burns instantly</span>
+      <span>Clone</span><span>Copies the first thing it touches, endlessly</span>
+      <span>Nitro</span><span>Detonates near 90°. So, near anything.</span>
+      <span>Salt + water</span><span>Brine, and brine still runs at -18°</span>
+      <span>Sand + water</span><span>Damp sand grips and stands up in a face</span>
+      <span>Thermite</span><span>2400°, sinks through steel, ignores water</span>
+      <span>Battery + relay</span><span>Warm the relay past 100° to close the circuit</span>
+      <span>Sealed steam</span><span>Keep boiling it and the vessel gives way</span>
+      <span>Cut a pillar</span><span>Whatever it held falls, and lands with force</span>
+    </div>
+
+    <h3>On a phone</h3>
+    <p style="margin:0 0 14px">Every shortcut below has a button. Materials are in the Materials tab, the brush and stroke tools in Brush, gravity and views in World, and saving in Scenes. ⊙ picks up whatever you tap, ↶ takes back your last stroke, and the Eraser in Tools is the touch equivalent of a right-click.</p>
+
+    <h3>Keys</h3>
+    <div class="kv">
+      <span>1–9, 0</span><span>First ten materials</span>
+      <span>Q W E R T Y U I O P A S</span><span>The rest, in tray order</span>
+      <span>Space</span><span>Pause / resume</span>
+      <span>. (period)</span><span>Advance one tick while paused</span>
+      <span>[ and ]</span><span>Brush smaller / larger</span>
+      <span>F</span><span>Fill gaps / replace</span>
+      <span>G</span><span>Cycle gravity</span>
+      <span>H</span><span>Cycle the four views</span>
+      <span>Ctrl/⌘ + Z</span><span>Undo the last stroke</span>
+      <span>Backspace</span><span>Empty the box</span>
+    </div>
+    <button class="close" id="bClose">Back to the box</button>
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+var $=function(s){return document.querySelector(s)};
+var rnd=Math.random;
+function clamp(v,a,b){return v<a?a:(v>b?b:v)}
+
+/* ==================================================================
+   MATERIALS
+   ================================================================== */
+var E={EMPTY:0,WALL:1,SAND:2,WATER:3,ICE:4,STEAM:5,OIL:6,FIRE:7,SMOKE:8,LAVA:9,
+       STONE:10,WOOD:11,PLANT:12,GLASS:13,METAL:14,ACID:15,GPOW:16,NITRO:17,
+       CLONE:18,VOID:19,VIRUS:20,SPARK:21,
+       SALT:22,MERCURY:23,THERMITE:24,FOAM:25,BATTERY:26,RELAY:27,
+       PUMP:28,PISTON:29,SENSOR:30,TIMER:31,ASH:32,RUST:33,SHARD:34,MAGNET:35,COAL:36,SNOW:37};
+
+var EL=[
+ {n:'Eraser',t:'none',d:1,c:[13,17,24],v:0,cond:.55,tmp:20,acid:1,cat:'Tools',
+  desc:'Clears whatever you drag over.'},
+ {n:'Wall',t:'static',d:9e9,c:[104,116,132],v:9,cond:.10,tmp:20,imm:1,acid:1,cat:'Tools',
+  desc:'Indestructible. Ignores acid, heat, blasts and void.'},
+ {n:'Sand',t:'powder',d:1600,c:[214,180,98],v:22,cond:.22,tmp:20,slide:3,melt:[950,13],cat:'Powders',
+  desc:'Piles into slopes. Melts into glass past 950°.'},
+ {n:'Water',t:'liquid',d:1000,sp:6,c:[46,108,224],v:14,cond:.50,tmp:20,melt:[100,5],frz:[0,4],cat:'Liquids',
+  desc:'Boils at 100°, freezes at 0°, drowns fire.'},
+ {n:'Ice',t:'powder',d:920,c:[152,222,246],v:12,cond:.35,tmp:-25,slide:0,melt:[2,3],cat:'Solids',
+  desc:'Holds its shape and chills its neighbours until it melts.'},
+ {n:'Steam',t:'gas',d:6,c:[186,202,214],v:10,cond:.11,tmp:110,cat:'Gases',
+  desc:'Climbs hard while it is hot. Cools on the way, and beads back into water on whatever cold thing it reaches.'},
+ {n:'Oil',t:'liquid',d:800,sp:4,c:[96,72,48],v:12,cond:.30,tmp:20,flam:.9,ign:180,burn:90,cat:'Liquids',
+  desc:'Floats on water. Catches from the smallest spark.'},
+ {n:'Fire',t:'gas',d:2,c:[255,150,44],v:0,cond:.65,tmp:760,glow:1,life:70,cat:'Energy',
+  desc:'Burns out into smoke. Lights anything flammable nearby.'},
+ {n:'Smoke',t:'gas',d:3,c:[74,76,88],v:10,cond:.25,tmp:130,life:120,cat:'Gases',
+  desc:'Drifts upward and thins out to nothing.'},
+ {n:'Lava',t:'liquid',d:2600,sp:1,c:[255,92,22],v:10,cond:.22,tmp:1400,glow:.95,frz:[660,10],life:200,cat:'Liquids',
+  desc:'1400°. Melts most things, then sets into stone.'},
+ {n:'Stone',t:'static',d:2600,c:[112,110,106],v:16,cond:.30,tmp:20,melt:[1020,9],cat:'Solids',
+  desc:'Good bones for a build. Turns molten past 1020°.'},
+ {n:'Wood',t:'static',d:700,c:[122,82,46],v:14,cond:.15,tmp:20,flam:.55,ign:250,burn:150,cat:'Solids',
+  desc:'Slow, stubborn, long-lasting burn.'},
+ {n:'Plant',t:'static',d:400,c:[58,178,84],v:24,cond:.12,tmp:20,flam:.85,ign:200,burn:50,cat:'Solids',
+  desc:'Drinks water and spreads through it. Goes up fast.'},
+ {n:'Glass',t:'static',d:2500,c:[172,214,224],v:10,cond:.25,tmp:20,melt:[1300,9],acid:1,cat:'Solids',
+  desc:'Acid-proof. What sand becomes when it survives lava.'},
+ {n:'Metal',t:'static',d:7800,c:[168,176,190],v:9,cond:.95,tmp:20,melt:[1450,9],cat:'Solids',
+  desc:'Carries heat brilliantly and conducts sparks.'},
+ {n:'Acid',t:'liquid',d:1150,sp:5,c:[152,255,64],v:14,cond:.35,tmp:20,glow:.35,cat:'Liquids',
+  desc:'Eats almost everything. Glass and wall hold it.'},
+ {n:'Gunpowder',t:'powder',d:1400,c:[72,70,80],v:12,cond:.25,tmp:20,slide:3,flam:1,ign:150,boom:[9,1500],cat:'Powders',
+  desc:'Detonates on heat, flame or a passing spark.'},
+ {n:'Nitro',t:'liquid',d:1200,sp:5,c:[255,74,142],v:12,cond:.30,tmp:20,glow:.35,flam:1,ign:90,boom:[18,2600],cat:'Liquids',
+  desc:'Goes off near 90°. Pools are a terrible idea.'},
+ {n:'Clone',t:'static',d:9e9,c:[226,110,232],v:8,cond:.10,tmp:20,imm:1,acid:1,glow:.2,cat:'Tools',
+  desc:'Learns the first material it touches, then makes it forever.'},
+ {n:'Void',t:'static',d:9e9,c:[92,40,124],v:8,cond:.05,tmp:20,imm:1,acid:1,glow:.3,cat:'Tools',
+  desc:'Deletes any matter that comes within a cell of it.'},
+ {n:'Virus',t:'liquid',d:1050,sp:2,c:[186,58,224],v:16,cond:.30,tmp:20,glow:.3,cat:'Energy',
+  desc:'Converts what it touches into more of itself. Dies above 150°.'},
+ {n:'Spark',t:'special',d:2,c:[255,250,190],v:0,cond:.9,tmp:60,glow:1,life:150,cat:'Energy',
+  desc:'Rides metal and mercury, heating the wire as it goes.'},
+ {n:'Salt',t:'powder',d:1500,c:[232,234,242],v:10,cond:.25,tmp:20,slide:3,cat:'Powders',
+  desc:'Dissolves into water and drops its freezing point to -18°.'},
+ {n:'Mercury',t:'liquid',d:13500,sp:4,c:[188,192,200],v:8,cond:.92,tmp:20,cat:'Liquids',
+  desc:'Denser than everything. Pools at the bottom and carries current.'},
+ {n:'Thermite',t:'powder',d:3400,c:[132,98,74],v:14,cond:.20,tmp:20,slide:2,flam:1,ign:300,burn:260,cat:'Powders',
+  desc:'Burns near 2400°. Water will not stop it, and steel will not survive it.'},
+ {n:'Foam',t:'liquid',d:120,sp:2,c:[228,236,242],v:6,cond:.15,tmp:20,life:220,cat:'Liquids',
+  desc:'Floats on everything and smothers fire without the steam burst.'},
+ {n:'Battery',t:'static',d:8000,c:[236,198,88],v:8,cond:.35,tmp:20,glow:.25,cat:'Energy',
+  desc:'Pushes a spark into any wire it touches, over and over.'},
+ {n:'Relay',t:'static',d:8000,c:[158,126,206],v:8,cond:.55,tmp:20,cat:'Energy',
+  desc:'Passes current only above 100°. Warm it to close the circuit.'},
+ {n:'Pump',t:'static',d:7000,c:[92,196,214],v:8,cond:.30,tmp:20,cat:'Machines',
+  desc:'Drives whatever touches it the way it faces. A row of them is a conveyor.'},
+ {n:'Piston',t:'static',d:7400,c:[214,168,92],v:8,cond:.40,tmp:20,cat:'Machines',
+  desc:'Shoves hard the way it faces when a spark reaches it.'},
+ {n:'Sensor',t:'static',d:7000,c:[120,220,150],v:8,cond:.40,tmp:20,cat:'Machines',
+  desc:'Sends a spark down the wire whenever anything touches it.'},
+ {n:'Timer',t:'static',d:7000,c:[226,140,96],v:8,cond:.35,tmp:20,glow:.2,cat:'Machines',
+  desc:'Pulses a spark into the wire on its own, over and over.'},
+ {n:'Ash',t:'powder',d:600,c:[104,100,96],v:16,cond:.18,tmp:20,slide:3,cat:'Powders',
+  desc:'What is left when something has finished burning. Washes away.'},
+ {n:'Rust',t:'powder',d:5200,c:[152,86,44],v:18,cond:.40,tmp:20,slide:1,cat:'Solids',
+  desc:'Metal that met water and lost. It crumbles instead of holding.'},
+ {n:'Shard',t:'powder',d:2500,c:[176,216,226],v:14,cond:.25,tmp:20,slide:2,melt:[1300,9],acid:1,cat:'Solids',
+  desc:'Broken glass. What a pane becomes when a blast reaches it.'},
+ {n:'Magnet',t:'static',d:8200,c:[206,72,96],v:8,cond:.60,tmp:20,cat:'Machines',
+  desc:'Pulls mercury and any loose metal towards it.'},
+ {n:'Coal',t:'powder',d:1300,c:[52,50,54],v:12,cond:.20,tmp:20,slide:2,flam:.6,ign:320,burn:420,cat:'Powders',
+  desc:'Slow, hot and long. Burns down to ash rather than nothing.'},
+ {n:'Snow',t:'powder',d:300,c:[236,244,250],v:8,cond:.22,tmp:-8,slide:3,melt:[2,3],cat:'Powders',
+  desc:'Piles light and loose, and turns to water the moment it warms.'}
+];
+var CATS=['Tools','Powders','Liquids','Solids','Gases','Energy','Machines'];
+var KEYS="1234567890qwertyuiopasdzxcvbnmjkl,;'/-";
+var D4=[[0,-1],[1,0],[0,1],[-1,0]];
+var D8=[[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]];
+
+/* ==================================================================
+   STATE
+   ================================================================== */
+var W=0,H=0,N=0,CELL=4,CW=0,CH=0,dpr=1;
+var grid,temp,temp2,life,aux,clr,moved,vx,vy,free;
+var sim,sctx,glow,gctx,glowB,gbctx,img,gimg;
+var view=$('#view'), ctx=view.getContext('2d',{alpha:false});
+var stage=$('#stage');
+
+var sel=E.SAND, brush=6, shape='circle', sym=0, rain=0, fillOnly=0;
+var strokeMode='free', picking=0, anchorX=-1, anchorY=-1, faceDir=3;
+var DIRV=[[0,0],[0,-1],[1,0],[0,1],[-1,0]];
+var undoBuf=[], UNDO_MAX=8;
+var SPEEDS=[0.25,0.5,1,2,3,4], tickAcc=0;
+var paused=false, speed=1, ambient=20, wind=0, GX=0, GY=1, openEdge=0;
+var mode='mat', glowAmt=0.60, shake=0, frame=0, fps=60, last=0, collapse=0;
+var pressing=false, erasing=false, px=-1, py=-1, lx=-1, ly=-1;
+var mass=0, meanT=20, energetic=0, fastest=0;
+var stack=null, seen=null, openAir=null, supportAge=0, airAge=0;
+var AW=0,AH=0,afx=null,afy=null,afx2=null,afy2=null,aSum=null,aCnt=null,aSolid=null;
+var press=null, comp=null, compVX=null, compVY=null, compN=null, convect=1;
+var lbody=null, lsurf=null, lbodyCount=0, ldon=null, ldonN=null, LDON=8;
+var lite=null, lighting=1, AMB=0.58;
+var zoom=1, panX=0, panY=0, panning=0, lastPX=0, lastPY=0;
+var lapse=[], lapseAge=0, LAPSE_MAX=60;
+var GRAV=0.30, DRAG=0.93, MAXV=12, REST=0.24;   /* terminal fall ~4.3 cells/tick */
+
+/* ==================================================================
+   GRID PLUMBING
+   ================================================================== */
+function I(x,y){ return (x<0||y<0||x>=W||y>=H) ? -1 : y*W+x; }
+
+function allocate(nw,nh,keep){
+  var og=grid, ot=temp, oc=clr, oa=aux, ol=life, ow=W, oh=H, ovx=vx, ovy=vy;
+  W=nw; H=nh; N=W*H;
+  grid=new Uint8Array(N); temp=new Float32Array(N); temp2=new Float32Array(N);
+  life=new Uint8Array(N); aux=new Uint8Array(N); clr=new Uint8Array(N); moved=new Uint8Array(N);
+  vx=new Float32Array(N); vy=new Float32Array(N); free=new Uint8Array(N);
+  stack=new Int32Array(N); seen=new Uint8Array(N); openAir=new Uint8Array(N);
+  press=new Uint8Array(N); comp=new Int32Array(N);
+  lbody=new Int32Array(N); lsurf=new Float32Array(4096); lite=new Float32Array(N);
+  ldon=new Int32Array(4096*LDON); ldonN=new Uint8Array(4096);
+  AW=Math.max(4,Math.ceil(W/4)); AH=Math.max(4,Math.ceil(H/4));
+  afx=new Float32Array(AW*AH); afy=new Float32Array(AW*AH);
+  afx2=new Float32Array(AW*AH); afy2=new Float32Array(AW*AH);
+  aSum=new Float32Array(AW*AH); aCnt=new Float32Array(AW*AH); aSolid=new Float32Array(AW*AH);
+  compVX=new Float32Array(1024); compVY=new Float32Array(1024); compN=new Float32Array(1024);
+  for(var i=0;i<N;i++){ temp[i]=ambient; clr[i]=(rnd()*255)|0; }
+  if(keep&&og&&ow>0&&oh>0){
+    for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+      var sx=(x/W*ow)|0, sy=(y/H*oh)|0, j=sy*ow+sx, i2=y*W+x;
+      grid[i2]=og[j]; temp[i2]=ot[j]; clr[i2]=oc[j]; aux[i2]=oa[j]; life[i2]=ol[j];
+      vx[i2]=ovx[j]; vy[i2]=ovy[j];
+    }
+  }
+  sim=document.createElement('canvas'); sim.width=W; sim.height=H; sctx=sim.getContext('2d');
+  glow=document.createElement('canvas'); glow.width=W; glow.height=H; gctx=glow.getContext('2d');
+  glowB=document.createElement('canvas'); glowB.width=W; glowB.height=H; gbctx=glowB.getContext('2d');
+  img=sctx.createImageData(W,H); gimg=gctx.createImageData(W,H);
+  var gd=gimg.data, d=img.data;
+  for(var k=3;k<d.length;k+=4){ d[k]=255; gd[k]=255; }
+}
+
+function fit(keep){
+  var r=stage.getBoundingClientRect();
+  CW=Math.max(160,Math.floor(r.width)); CH=Math.max(160,Math.floor(r.height));
+  dpr=Math.min(2,window.devicePixelRatio||1);
+  view.width=Math.floor(CW*dpr); view.height=Math.floor(CH*dpr);
+  CELL = CW<520 ? 3 : 4;
+  allocate(Math.max(48,Math.floor(CW/CELL)), Math.max(48,Math.floor(CH/CELL)), keep);
+}
+
+function setCell(i,t,fresh){
+  grid[i]=t;
+  var p=EL[t];
+  life[i]= p.life ? Math.min(255,(p.life*(0.6+rnd()*0.8))|0) : 0;
+  aux[i]=0;
+  clr[i]=(rnd()*255)|0;
+  vx[i]=0; vy[i]=0; free[i]=0;
+  if(fresh) temp[i]=p.tmp;
+}
+function wipe(){ for(var i=0;i<N;i++){ grid[i]=0; life[i]=0; aux[i]=0; temp[i]=ambient; vx[i]=0; vy[i]=0; free[i]=0; } }
+
+function fluid(t){ var k=EL[t].t; return t===0||k==='liquid'||k==='gas'; }
+
+function swap(i,j){
+  var a=grid[i]; grid[i]=grid[j]; grid[j]=a;
+  a=life[i]; life[i]=life[j]; life[j]=a;
+  a=aux[i]; aux[i]=aux[j]; aux[j]=a;
+  a=clr[i]; clr[i]=clr[j]; clr[j]=a;
+  var f=temp[i]; temp[i]=temp[j]; temp[j]=f;
+  f=vx[i]; vx[i]=vx[j]; vx[j]=f;
+  f=vy[i]; vy[i]=vy[j]; vy[j]=f;
+  var u=free[i]; free[i]=free[j]; free[j]=u;
+  moved[j]=1;
+}
+/* mode +1: mover must be denser. mode -1: mover must be lighter (buoyant). */
+function into(i,j,mode2){
+  var b=grid[j];
+  if(b===0){ swap(i,j); return true; }
+  if(!fluid(b)) return false;
+  var da=EL[grid[i]].d, db=EL[b].d;
+  if(mode2>0 ? !(da>db) : !(da<db)) return false;
+  swap(i,j); return true;
+}
+
+/* ==================================================================
+   MOVEMENT
+   ================================================================== */
+function drift(i,x,y){                       /* zero gravity */
+  if(rnd()<0.4){ var d=D4[(rnd()*4)|0], j=I(x+d[0],y+d[1]); if(j>=0) return into(i,j,1); }
+  return false;
+}
+/* Travel along the velocity vector, a cell at a time, until something stops us.
+   Everything dramatic - blast debris, a toppling wall, a grain bouncing off a
+   ledge - comes out of this rather than out of a special case.
+
+   `mode` is the density rule handed to into(): +1 for anything falling, -1 for a
+   gas, which has to be able to swap with the heavier stuff it is climbing
+   through. It returns whether the cell actually travelled, NOT whether it hit
+   something. A cell that was blocked on its very first step has not moved, and
+   the caller must still be free to try fall/flow/rise - otherwise a packed body
+   of gas with a wall against it spends every tick bouncing in place and never
+   rises. That was the whole reason steam sat still next to anything solid. */
+function ballistic(i,x,y,mode2){
+  var sx=vx[i], sy=vy[i], sp=Math.sqrt(sx*sx+sy*sy);
+  if(sp<1.1) return false;
+  if(mode2===undefined) mode2=1;
+  var steps=sp>MAXV?MAXV:(sp|0), ux=sx/sp, uy=sy/sp;
+  var fx=x+0.5, fy=y+0.5, ci=i, cx=x, cy=y, j, nx, ny, b;
+  for(var k=0;k<steps;k++){
+    fx+=ux; fy+=uy;
+    nx=Math.floor(fx); ny=Math.floor(fy);
+    if(nx===cx&&ny===cy) continue;
+    j=I(nx,ny);
+    if(j<0){
+      if(openEdge){ grid[ci]=0; life[ci]=0; aux[ci]=0; vx[ci]=0; vy[ci]=0; free[ci]=0; return true; }
+      vx[ci]*=-REST; vy[ci]*=-REST; return ci!==i;
+    }
+    if(into(ci,j,mode2)){ ci=j; cx=nx; cy=ny; continue; }
+    b=grid[j];
+    if(b!==0&&!EL[b].imm){                 /* hand part of the momentum on */
+      /* Scaled by the mass ratio, because momentum is. A grain shoves another
+         grain; a puff of steam does not shove a stone wall. Unscaled, a hot gas
+         could cut a sealed vessel loose from the inside just by bumping into it -
+         a stone boiler came apart at tick 88 with nothing but steam in it. */
+      var mv=EL[grid[ci]].d, tg=EL[b].d, share=mv>=tg?0.45:0.45*mv/tg;
+      vx[j]+=vx[ci]*share; vy[j]+=vy[ci]*share;
+      if(EL[b].t==='static'&&mv>400&&Math.abs(vx[ci])+Math.abs(vy[ci])>5) free[j]=1;
+    }
+    vx[ci]*=-REST; vy[ci]*=-REST;
+    return ci!==i;
+  }
+  return ci!==i;
+}
+
+function fall(i,x,y){
+  if(!GX&&!GY) return drift(i,x,y);
+  var RX=GY, RY=-GX, j;
+  var nx=x+GX, ny=y+GY;
+  j=I(nx,ny);
+  if(j<0){ if(openEdge){ grid[i]=0; life[i]=0; aux[i]=0; return true; } }
+  else if(into(i,j,1)) return true;
+  /* Slide down the slope. A grain takes up to `slide` diagonal steps per tick so a
+     heap relaxes as fast as the brush fills it; at one step per tick the surface
+     lags the pour and sets into shelves. The stopping rule is unchanged, so the
+     angle of repose stays where it was. */
+  var s=rnd()<0.5?1:-1, steps=EL[grid[i]].slide||1;
+  if(grid[i]===E.SAND&&aux[i]) steps=0;   /* damp sand grips, and holds a vertical face */
+  var ci=i, cx=x, cy=y, went=false;
+  for(var k=0;k<steps;k++){
+    var ax=cx+GX+RX*s, ay=cy+GY+RY*s;
+    j=I(ax,ay);
+    if(j>=0&&into(ci,j,1)){ ci=j; cx=ax; cy=ay; }
+    else {
+      var bx=cx+GX-RX*s, by=cy+GY-RY*s;
+      j=I(bx,by);
+      if(j<0||!into(ci,j,1)) break;
+      ci=j; cx=bx; cy=by; s=-s;
+    }
+    went=true;
+    j=I(cx+GX,cy+GY);
+    if(j>=0&&into(ci,j,1)) return true;
+  }
+  return went;
+}
+function flow(i,x,y){
+  if(fall(i,x,y)) return true;
+  if(!GX&&!GY) return false;
+  /* Finding a level. A runny liquid whose local surface sits below the surface of
+     its own connected body pulls one cell from the top of that body down into the
+     gap above it. The high side drops by a cell and the low side rises by a cell,
+     which is what hydrostatic equilibrium actually is, and nothing is created or
+     destroyed on the way.
+
+     What this replaced lifted the local cell and shifted the column under it up
+     to fill in behind. That leaves a void at the foot of the column, and a void
+     under water floats: the cell above drops into it, then the cell above that,
+     and about six ticks later the void is back at the surface and the cell that
+     rose has fallen back. Net movement was near zero - a U-tube left to run for
+     1200 ticks closed a 46 cell difference by four cells - and the void bubbling
+     through the body was itself the dotted line people saw along a pool's floor.
+
+     Viscous liquids (lava, virus, foam) are left out: not finding their level is
+     the whole point of being viscous. */
+  var body=lbody[i], vt=grid[i];
+  if(body&&GY>0&&(EL[vt].sp||0)>=4&&y>lsurf[body]+1){
+    var up=I(x,y-1);
+    if(up>=0&&grid[up]===0){
+      var base=body*LDON, nd=ldonN[body], q4, dn4, dy4;
+      for(q4=0;q4<nd;q4++){
+        dn4=ldon[base+q4];
+        if(dn4<0||dn4===up||dn4===i||grid[dn4]!==vt) continue;
+        dy4=(dn4/W)|0;
+        if(dy4>=y-1) continue;                        /* not actually higher up */
+        if(dy4>0&&grid[dn4-W]!==0) continue;          /* no longer a free surface */
+        /* Only standing water donates. The head of a falling stream is a free
+           surface too, and without this the pool it lands in would reach up and
+           eat the stream from the top down. */
+        if(vy[dn4]>0.8||vy[dn4]<-0.8||vx[dn4]>0.8||vx[dn4]<-0.8) continue;
+        swap(dn4,up);
+        ldon[base+q4]=-1;                             /* spent until the next scan */
+        return true;
+      }
+    }
+  }
+  var RX=GY, RY=-GX, sp=EL[grid[i]].sp||3, dir=rnd()<0.5?1:-1;
+  var ci=i, cx=x, cy=y, went=false;
+  for(var k=0;k<sp;k++){
+    var nx=cx+RX*dir, ny=cy+RY*dir, j=I(nx,ny);
+    if(j<0) break;
+    if(!into(ci,j,1)) break;
+    ci=j; cx=nx; cy=ny; went=true;
+    var dj=I(cx+GX,cy+GY);
+    if(dj>=0&&into(ci,dj,1)) return true;
+  }
+  return went;
+}
+function rise(i,x,y){
+  if(!GX&&!GY) return drift(i,x,y);
+  var UX=-GX, UY=-GY, RX=GY, RY=-GX, j;
+  if(wind&&rnd()<Math.abs(wind)*0.3){
+    var s2=wind>0?1:-1;
+    j=I(x+RX*s2,y+RY*s2); if(j>=0&&into(i,j,-1)) return true;
+  }
+  j=I(x+UX,y+UY);
+  if(j<0){ if(openEdge){ grid[i]=0; life[i]=0; return true; } }
+  else if(rnd()<0.86&&into(i,j,-1)) return true;
+  var s=rnd()<0.5?1:-1;
+  j=I(x+UX+RX*s,y+UY+RY*s); if(j>=0&&into(i,j,-1)) return true;
+  j=I(x+UX-RX*s,y+UY-RY*s); if(j>=0&&into(i,j,-1)) return true;
+  if(rnd()<0.55){ j=I(x+RX*s,y+RY*s); if(j>=0&&into(i,j,-1)) return true; }
+  return false;
+}
+
+/* ==================================================================
+   REACTIONS
+   ================================================================== */
+function blast(cx,cy,r,heat){
+  var R=Math.ceil(r*2.2);                  /* the shove carries further than the flame */
+  for(var dy=-R;dy<=R;dy++)for(var dx=-R;dx<=R;dx++){
+    var dist=Math.sqrt(dx*dx+dy*dy); if(dist>R) continue;
+    var i=I(cx+dx,cy+dy); if(i<0) continue;
+    var t=grid[i]; if(EL[t].imm) continue;
+    if(dist<=r&&(t===E.GLASS)&&rnd()<0.85){ setCell(i,E.SHARD); t=E.SHARD; }
+    if(dist<=r){
+      var f=1-dist/r;
+      if(temp[i]<heat*f) temp[i]=heat*f;
+      if(dist<r*0.55) setCell(i,E.FIRE);
+      else if(rnd()<f*0.85){ if(t===0||EL[t].t!=='static'||rnd()<0.45) setCell(i,E.FIRE); }
+    }
+    /* Impulse last: setCell resets momentum, so throwing has to come after burning. */
+    if(dist>0.5&&grid[i]!==0){
+      var g=1-dist/R, push=g*g*r*1.6;
+      vx[i]+=dx/dist*push; vy[i]+=dy/dist*push;
+      if(EL[grid[i]].t==='static'&&g>0.3) free[i]=1;
+    }
+  }
+  for(var q=0;q<12;q++){
+    var ang=q/12*6.2832;
+    airPush(cx+Math.cos(ang)*r*0.8|0, cy+Math.sin(ang)*r*0.8|0, Math.cos(ang)*r*0.05, Math.sin(ang)*r*0.05);
+  }
+  if(shake<r*0.8) shake=Math.min(16,r*0.8);
+  thud(r);
+}
+function ignite(i,x,y,p){
+  var go = temp[i]>=p.ign;
+  if(!go){
+    for(var k=0;k<4;k++){
+      var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+      var nt=grid[j];
+      if(nt===E.FIRE||nt===E.LAVA||nt===E.SPARK){ if(rnd()<p.flam*0.5) go=true; break; }
+    }
+  }
+  if(!go) return false;
+  if(p.boom){ blast(x,y,p.boom[0],p.boom[1]); return true; }
+  if(p.t==='static'||grid[i]===E.THERMITE){ /* solids and thermite char in place */
+    aux[i]=Math.min(255,p.burn||60);
+    if(temp[i]<440) temp[i]=440;
+    return true;
+  }
+  setCell(i,E.FIRE);
+  life[i]=Math.min(255,p.burn||60);
+  if(temp[i]<650) temp[i]=650;
+  return true;
+}
+function emberStep(i,x,y,p){
+  if(temp[i]<570) temp[i]=570;
+  var k,j;
+  for(k=0;k<4;k++){
+    j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    if(grid[j]===E.WATER||grid[j]===E.ICE){
+      if(grid[j]===E.WATER&&rnd()<0.4){ setCell(j,E.STEAM); temp[j]=110; }
+      aux[i]=0; temp[i]=95; return;
+    }
+  }
+  aux[i]--;
+  if(rnd()<0.3){
+    j=I(x+D4[(rnd()*4)|0][0],y+D4[(rnd()*4)|0][1]);
+    if(j>=0&&grid[j]===0){ setCell(j,E.FIRE); life[j]=20+((rnd()*30)|0); }
+  }
+  if(aux[i]===0) setCell(i, rnd()<0.4?E.FIRE:(rnd()<0.5?E.ASH:E.SMOKE));
+}
+function lavaStep(i,x,y){
+  if(temp[i]<1150&&life[i]>0){ life[i]--; temp[i]+=(1150-temp[i])*0.25; }
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var t=grid[j];
+    if(t===E.WATER){
+      setCell(j,E.STEAM); temp[j]=118;
+      if(rnd()<0.45){ setCell(i,E.STONE); temp[i]=560; return true; }
+      temp[i]-=150;
+    } else if(t===E.ICE){
+      setCell(j,E.WATER); temp[j]=8; temp[i]-=70;
+    } else if(t===E.SAND&&rnd()<0.14){
+      setCell(j,E.GLASS); temp[j]=880; temp[i]-=25;
+    } else if((t===E.WOOD||t===E.PLANT)&&aux[j]===0){
+      aux[j]=Math.min(255,EL[t].burn||60);
+    }
+  }
+  return false;
+}
+function burnStep(i,x,y){
+  if(temp[i]<520+life[i]*2) temp[i]=520+life[i]*2;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var nt=grid[j];
+    if(nt===E.WATER||nt===E.ICE){
+      if(nt===E.WATER&&rnd()<0.55){ setCell(j,E.STEAM); temp[j]=110; }
+      grid[i]=0; life[i]=0; return;
+    }
+  }
+  if(life[i]>0){ life[i]--; }
+  else {
+    if(rnd()<0.6){ setCell(i,E.SMOKE); temp[i]=190; } else { grid[i]=0; life[i]=0; }
+    return;
+  }
+  if(rnd()<0.78) rise(i,x,y);
+}
+function acidStep(i,x,y){
+  if(rnd()>0.3) return;
+  var d=D4[(rnd()*4)|0], j=I(x+d[0],y+d[1]); if(j<0) return;
+  var t=grid[j];
+  if(t!==0&&t!==E.ACID&&!EL[t].acid){
+    if(rnd()<0.28) setCell(j,E.SMOKE); else { grid[j]=0; life[j]=0; }
+    temp[i]+=7;
+    if(rnd()<0.32){ grid[i]=0; life[i]=0; }
+  }
+}
+function virusStep(i,x,y){
+  if(rnd()>0.15) return;
+  var d=D4[(rnd()*4)|0], j=I(x+d[0],y+d[1]); if(j<0) return;
+  var t=grid[j];
+  if(t!==0&&t!==E.VIRUS&&t!==E.FIRE&&!EL[t].imm) setCell(j,E.VIRUS);
+}
+function plantStep(i,x,y){
+  if(rnd()>0.07) return;
+  var d=D8[(rnd()*8)|0], j=I(x+d[0],y+d[1]); if(j<0) return;
+  if(grid[j]===E.WATER) setCell(j,E.PLANT);
+}
+function cloneStep(i,x,y){
+  var k,j;
+  if(!aux[i]){
+    for(k=0;k<4;k++){
+      j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+      var t=grid[j];
+      if(t!==0&&t!==E.CLONE&&!EL[t].imm){ aux[i]=t; break; }
+    }
+    return;
+  }
+  if(rnd()<0.5){
+    var d=D4[(rnd()*4)|0]; j=I(x+d[0],y+d[1]);
+    if(j>=0&&grid[j]===0) setCell(j,aux[i],true);
+  }
+}
+function voidStep(i,x,y){
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    if(grid[j]!==0&&!EL[grid[j]].imm){ grid[j]=0; life[j]=0; aux[j]=0; }
+  }
+}
+/* Sand remembers whether it is wet. Damp grains grip each other and stand up in
+   a face; heat drives the water back off and the heap slumps again. */
+function dampStep(i,x,y){
+  if(temp[i]>60){ aux[i]=0; return; }
+  if(aux[i]) return;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    if(grid[j]===E.WATER||grid[j]===E.ICE){ aux[i]=1; return; }
+  }
+}
+function saltStep(i,x,y){
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    if(grid[j]===E.WATER){
+      aux[j]=1;                          /* brine: stays liquid well below zero */
+      setCell(i,E.WATER,false); aux[i]=1;
+      return true;
+    }
+  }
+  return false;
+}
+function foamStep(i,x,y){
+  var popped=false;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var t=grid[j];
+    if(t===E.FIRE){ grid[j]=0; life[j]=0; popped=true; }
+    else if(t===E.LAVA&&rnd()<0.25) popped=true;
+  }
+  if(popped||temp[i]>110) life[i]-=life[i]>4?4:life[i];
+  else if(life[i]>0) life[i]--;
+  if(life[i]===0){ grid[i]=0; return true; }
+  return false;
+}
+function thermiteStep(i,x,y){
+  if(temp[i]<2400) temp[i]=2400;         /* hot enough to take metal with it */
+  aux[i]--;
+  for(var k=0;k<4;k++){                  /* and it eats down rather than just radiating */
+    var m=I(x+D4[k][0],y+D4[k][1]); if(m<0) continue;
+    var mt=grid[m];
+    if((mt===E.METAL||mt===E.STONE||mt===E.GLASS||mt===E.ICE)&&rnd()<0.16){
+      setCell(m,E.LAVA); temp[m]=1600;
+    }
+  }
+  if(rnd()<0.22){
+    var j=I(x+D4[(rnd()*4)|0][0],y+D4[(rnd()*4)|0][1]);
+    if(j>=0&&grid[j]===0){ setCell(j,E.FIRE); life[j]=26+((rnd()*30)|0); }
+  }
+  if(aux[i]===0){ setCell(i,E.LAVA); return; }
+  fall(i,x,y);
+}
+/* Steam does not snap back into water the moment it dips below boiling. It has to
+   shed its latent heat, and it needs somewhere to bead - a cold surface, a cold
+   droplet, or failing that a long enough drift through cold air. `life` counts
+   that up; the colder the steam and the colder what it is touching, the faster.
+   Before this, steam condensed on a plain temperature threshold, and since a gas
+   surrounded by 20 degree air loses roughly a tenth of its heat every tick, a
+   whole plume turned to water within about a dozen ticks of being made. */
+function steamStep(i,x,y){
+  var T=temp[i];
+  if(T>=100){ life[i]=0; return false; }         /* still properly steam */
+  var cold=0, k, j, t;
+  for(k=0;k<4;k++){
+    j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    t=grid[j];
+    if(t===0||EL[t].t==='gas') continue;
+    if(temp[j]<T-12) cold += (t===E.WATER||t===E.ICE||t===E.SNOW)?3:2;
+  }
+  /* Contact does most of the work: steam beads on the cold thing it touches, the
+     way it does on a window. Cold air alone takes far longer, which is what keeps
+     a plume looking like steam for the length of its climb instead of raining out
+     halfway up. */
+  var rate=(100-T)*0.016+cold*1.8;
+  var whole=rate|0;
+  if(rnd()<rate-whole) whole++;
+  life[i]=Math.min(255,life[i]+whole);
+  if(life[i]<60) return false;
+  /* The droplet keeps the heat the steam had, so a condensing plume warms the
+     water it falls back into rather than teleporting cold water in. */
+  setCell(i,E.WATER); temp[i]=T;
+  return true;
+}
+
+/* Steam with nowhere to go leans on whatever is holding it. Keep boiling it in a
+   sealed vessel and the vessel is what gives. */
+function steamPressure(i,x,y,rose){
+  if(grid[i]!==E.STEAM) return;      /* it climbed out of this cell; not ours any more */
+  var sealed = !openAir[i];
+  if(sealed&&!rose&&temp[i]>110){ if(aux[i]<250) aux[i]+=2; }
+  else { if(aux[i]>0) aux[i]--; return; }
+  if(aux[i]<150) return;
+  aux[i]=0;
+  var burst = temp[i]>200;              /* only a properly superheated pocket lets go */
+  for(var dy=-2;dy<=2;dy++)for(var dx=-2;dx<=2;dx++){
+    var d=Math.sqrt(dx*dx+dy*dy); if(d>2||d<0.5) continue;
+    var m=I(x+dx,y+dy); if(m<0) continue;
+    var mt=grid[m]; if(mt===0||EL[mt].imm) continue;
+    var g=1-d/2;
+    vx[m]+=dx/d*g*2.4; vy[m]+=dy/d*g*2.4;
+    if(burst&&EL[mt].t==='static'&&g>0.4&&rnd()<0.25) free[m]=1;  /* d<=1: the wall it is actually pressing on */
+  }
+  if(burst){ if(shake<2.5) shake=2.5; thud(2); }
+}
+function batteryStep(i,x,y){
+  if(aux[i]>0){ aux[i]--; return; }
+  aux[i]=16;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var t=grid[j];
+    if((t===E.METAL||t===E.MERCURY)&&aux[j]===0){ setCell(j,E.SPARK,true); temp[j]+=12; }
+  }
+}
+function nudge(j,dx,dy,power){
+  var t=grid[j];
+  if(t===0||EL[t].imm) return;
+  if(EL[t].t==='static'&&!free[j]) return;
+  vx[j]+=dx*power; vy[j]+=dy*power;
+}
+function pumpStep(i,x,y){
+  var d=DIRV[aux[i]||3], k, j;
+  for(k=0;k<8;k++){
+    j=I(x+D8[k][0],y+D8[k][1]);
+    if(j>=0) nudge(j,d[0],d[1],2.2);
+  }
+}
+function pistonStep(i,x,y){
+  if(life[i]>0){ life[i]--; return; }
+  var fired=false, k, j;
+  for(k=0;k<4;k++){
+    j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var jt=grid[j];
+    if(jt===E.SPARK||((jt===E.METAL||jt===E.MERCURY||jt===E.RELAY)&&aux[j]>0)){ fired=true; break; }
+  }
+  if(!fired) return;
+  life[i]=14;
+  /* Drive the whole run in front, not just the cells nearest the face - a packed
+     block only moves if its leading cell is moving too. Velocity is set rather
+     than added so the column leaves together. */
+  var d=DIRV[aux[i]||3], px2=-d[1], py2=d[0];
+  for(var lat=-1;lat<=1;lat++)
+    for(var step=1;step<=9;step++){
+      j=I(x+d[0]*step+px2*lat, y+d[1]*step+py2*lat);
+      if(j<0) break;
+      var jt=grid[j];
+      if(jt===0) continue;
+      if(EL[jt].imm) break;
+      if(EL[jt].t==='static'&&!free[j]) break;
+      vx[j]=d[0]*8; vy[j]=d[1]*8;
+    }
+  if(shake<2) shake=2;
+}
+function emitSpark(i,x,y){
+  var lit=false;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var t=grid[j];
+    if((t===E.METAL||t===E.MERCURY||t===E.RELAY)&&aux[j]===0){
+      setCell(j,E.SPARK,true); aux[j]=t===E.MERCURY?9:(t===E.RELAY?8:0); temp[j]+=12; lit=true;
+    }
+  }
+  return lit;
+}
+function sensorStep(i,x,y){
+  if(life[i]>0){ life[i]--; return; }
+  var touched=false;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    var t=grid[j];
+    if(t!==0&&t!==E.SENSOR&&t!==E.METAL&&t!==E.MERCURY&&t!==E.RELAY&&t!==E.SPARK){ touched=true; break; }
+  }
+  if(touched&&emitSpark(i,x,y)) life[i]=10;
+}
+function timerStep(i,x,y){
+  if(life[i]>0){ life[i]--; return; }
+  life[i]=120;
+  emitSpark(i,x,y);
+}
+function magnetStep(i,x,y){
+  if(frame&1) return;
+  var R=12;
+  for(var dy=-R;dy<=R;dy++)for(var dx=-R;dx<=R;dx++){
+    var d=Math.sqrt(dx*dx+dy*dy); if(d>R||d<0.6) continue;
+    var j=I(x+dx,y+dy); if(j<0) continue;
+    var t=grid[j];
+    if(t!==E.MERCURY&&t!==E.RUST&&!(t===E.METAL&&free[j])) continue;
+    var pull=1-d/R;
+    vx[j]-=dx/d*pull*1.6; vy[j]-=dy/d*pull*1.6;
+    if(rnd()<pull*0.7){                 /* and haul it a cell closer outright */
+      var sx=dx>0?-1:(dx<0?1:0), sy=dy>0?-1:(dy<0?1:0);
+      var step=Math.abs(dx)>Math.abs(dy)?I(x+dx+sx,y+dy):I(x+dx,y+dy+sy);
+      if(step>=0&&step!==j) into(j,step,1);
+    }
+  }
+}
+function rustStep(i,x,y){
+  if(rnd()>0.004) return;
+  for(var k=0;k<4;k++){
+    var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+    if(grid[j]===E.WATER){ setCell(i,E.RUST); return; }
+  }
+}
+
+function conducts(t,j){
+  if(t===E.METAL||t===E.MERCURY) return true;
+  if(t===E.RELAY) return temp[j]>100;    /* warm the relay and the circuit closes */
+  return false;
+}
+
+function sparkStep(i,x,y){
+  temp[i]+=34;                            /* current warms the wire it runs down */
+  var l=life[i], host=aux[i]===9?E.MERCURY:(aux[i]===8?E.RELAY:E.METAL);
+  if(l>1){
+    for(var k=0;k<4;k++){
+      var j=I(x+D4[k][0],y+D4[k][1]); if(j<0) continue;
+      var t=grid[j];
+      if(conducts(t,j)&&aux[j]===0){
+        var mark=t===E.MERCURY?9:(t===E.RELAY?8:0);
+        setCell(j,E.SPARK); aux[j]=mark; life[j]=l-1; moved[j]=1; temp[j]+=22;
+      }
+    }
+  }
+  grid[i]=host; life[i]=0; aux[i]=7;
+}
+
+/* ==================================================================
+   AIR
+   ================================================================== */
+/* A coarse flow field over the box. Warm patches push upward, the field smears
+   into itself so the motion spreads, and solids stop it dead. Gases then ride
+   whatever the field is doing, which is what turns fire into a column and smoke
+   into a plume instead of two sprites that happen to drift up. */
+function airStep(){
+  var i,x,y,a,n=AW*AH;
+  aSum.fill(0); aCnt.fill(0); aSolid.fill(0);
+  for(y=0;y<H;y++){
+    var arow=((y>>2)*AW)|0, row=y*W;
+    for(x=0;x<W;x++){
+      i=row+x; a=arow+(x>>2);
+      aSum[a]+=temp[i]; aCnt[a]++;
+      var t=grid[i];
+      if(t!==0&&EL[t].t==='static') aSolid[a]++;
+    }
+  }
+  for(a=0;a<n;a++){
+    var avg=aCnt[a]?aSum[a]/aCnt[a]:ambient;
+    var lift=(avg-ambient)*0.0022;
+    if(lift>0.5) lift=0.5;
+    afy[a]=(afy[a]-lift)*0.94;
+    afx[a]=(afx[a]+wind*0.006)*0.94;
+    if(aSolid[a]>10){ afx[a]*=0.25; afy[a]*=0.25; }
+  }
+  for(y=0;y<AH;y++)for(x=0;x<AW;x++){
+    a=y*AW+x;
+    var sx=afx[a]*2, sy=afy[a]*2, c=2;
+    if(x>0){ sx+=afx[a-1]; sy+=afy[a-1]; c++; }
+    if(x<AW-1){ sx+=afx[a+1]; sy+=afy[a+1]; c++; }
+    if(y>0){ sx+=afx[a-AW]; sy+=afy[a-AW]; c++; }
+    if(y<AH-1){ sx+=afx[a+AW]; sy+=afy[a+AW]; c++; }
+    afx2[a]=sx/c; afy2[a]=sy/c;
+  }
+  var tx=afx; afx=afx2; afx2=tx;
+  var ty=afy; afy=afy2; afy2=ty;
+}
+function airAt(x,y){ return ((y>>2)*AW)+(x>>2); }
+function airPush(x,y,dx,dy){
+  if(!afx) return;
+  var a=airAt(clamp(x,0,W-1),clamp(y,0,H-1));
+  afx[a]+=dx; afy[a]+=dy;
+}
+
+/* Find each connected body of liquid and remember how high its surface stands.
+   A cell far below its own body's surface is under pressure and may climb, which
+   is what lets the far arm of a U-tube fill. Depth beneath the cell is not enough
+   on its own - the topmost cell of the far arm has nothing above it at all. */
+function liquidLevel(){
+  lbody.fill(0);
+  lbodyCount=0;
+  if(GY<=0) return;
+  var i,x,y,t,label=0;
+  for(i=0;i<N;i++){
+    t=grid[i];
+    if(t===0||lbody[i]||EL[t].t!=='liquid') continue;
+    if(label>=4090) break;
+    label++;
+    var top=(i/W)|0, n=0, nd=0, base=label*LDON, q, ry, wr, worst;
+    stack[n++]=i; lbody[i]=label;
+    while(n>0){
+      var c=stack[--n], cx=c%W, cy=(c/W)|0;
+      if(cy<top) top=cy;
+      /* Keep the few highest free-surface cells of the body. These are what it
+         gives up when some lower part of it has room to rise - see flow(). */
+      if(cy>0&&grid[c-W]===0){
+        if(nd<LDON){ ldon[base+nd]=c; nd++; }
+        else {
+          wr=-1; worst=0;
+          for(q=0;q<LDON;q++){ ry=(ldon[base+q]/W)|0; if(ry>wr){ wr=ry; worst=q; } }
+          if(cy<wr) ldon[base+worst]=c;
+        }
+      }
+      for(var k=0;k<4;k++){
+        var j=I(cx+D4[k][0],cy+D4[k][1]);
+        if(j<0||lbody[j]||grid[j]!==t) continue;
+        lbody[j]=label; stack[n++]=j;
+      }
+    }
+    lsurf[label]=top; ldonN[label]=nd;
+  }
+  lbodyCount=label;
+}
+
+/* ==================================================================
+   SUPPORT
+   ================================================================== */
+/* Flood out from whatever the gravity is pressing against. Any solid the flood
+   never reaches is hanging on nothing, so it is cut loose and falls. Run every
+   few ticks - it is a whole-grid sweep, but a cheap one. */
+function supportScan(){
+  if(!collapse||(!GX&&!GY)) return;
+  var i,x,y,t,n=0;
+  seen.fill(0);
+  for(i=0;i<N;i++) if(grid[i]===E.WALL){ seen[i]=1; stack[n++]=i; }
+  if(GY>0){ y=H-1; for(x=0;x<W;x++){ i=y*W+x; if(!seen[i]&&grid[i]&&EL[grid[i]].t==='static'){ seen[i]=1; stack[n++]=i; } } }
+  else if(GY<0){ for(x=0;x<W;x++){ i=x; if(!seen[i]&&grid[i]&&EL[grid[i]].t==='static'){ seen[i]=1; stack[n++]=i; } } }
+  else if(GX>0){ x=W-1; for(y=0;y<H;y++){ i=y*W+x; if(!seen[i]&&grid[i]&&EL[grid[i]].t==='static'){ seen[i]=1; stack[n++]=i; } } }
+  else { for(y=0;y<H;y++){ i=y*W; if(!seen[i]&&grid[i]&&EL[grid[i]].t==='static'){ seen[i]=1; stack[n++]=i; } } }
+  while(n>0){
+    i=stack[--n]; x=i%W; y=(i/W)|0;
+    for(var k=0;k<4;k++){
+      var nx=x+D4[k][0], ny=y+D4[k][1], j=I(nx,ny);
+      if(j<0||seen[j]) continue;
+      t=grid[j];
+      if(t===0||EL[t].t!=='static') continue;
+      seen[j]=1; stack[n++]=j;
+    }
+  }
+  comp.fill(0);
+  var label=0;
+  for(i=0;i<N;i++){
+    t=grid[i];
+    if(t===0||EL[t].t!=='static'){ if(t===0) free[i]=0; continue; }
+    if(EL[t].imm){ free[i]=0; continue; }
+    free[i]=seen[i]?0:1;
+  }
+  /* Group what came loose, so a detached slab keeps one shared velocity and
+     topples instead of dissolving into a shower of separate cells. */
+  for(i=0;i<N;i++){
+    if(!free[i]||comp[i]||grid[i]===0) continue;
+    if(label>=1023) break;
+    label++;
+    var m=0; stack[m++]=i; comp[i]=label;
+    while(m>0){
+      var c=stack[--m], cx=c%W, cy=(c/W)|0;
+      for(var k2=0;k2<4;k2++){
+        var j2=I(cx+D4[k2][0],cy+D4[k2][1]);
+        if(j2<0||comp[j2]||!free[j2]||grid[j2]===0) continue;
+        comp[j2]=label; stack[m++]=j2;
+      }
+    }
+  }
+  compCount=label;
+}
+var compCount=0;
+function bindChunks(){
+  if(!collapse||compCount<1) return;
+  var i,c;
+  for(c=1;c<=compCount;c++){ compVX[c]=0; compVY[c]=0; compN[c]=0; }
+  for(i=0;i<N;i++){ c=comp[i]; if(c){ compVX[c]+=vx[i]; compVY[c]+=vy[i]; compN[c]++; } }
+  for(c=1;c<=compCount;c++) if(compN[c]>0){ compVX[c]/=compN[c]; compVY[c]/=compN[c]; }
+  for(i=0;i<N;i++){ c=comp[i]; if(c){ vx[i]=compVX[c]; vy[i]=compVY[c]; } }
+}
+
+/* Flood the outside in through anything a gas could travel along. Whatever the
+   flood never reaches is a sealed pocket - the only place pressure can build.
+   Before this, steam merely blocked by a ceiling counted as confined, so any lid
+   set off a burst. */
+function airScan(){
+  var i,x,y,t,n=0;
+  openAir.fill(0);
+  function edge(i){ t=grid[i]; if(t===0||EL[t].t==='gas'){ if(!openAir[i]){ openAir[i]=1; stack[n++]=i; } } }
+  for(x=0;x<W;x++){ edge(x); edge((H-1)*W+x); }
+  for(y=0;y<H;y++){ edge(y*W); edge(y*W+W-1); }
+  while(n>0){
+    i=stack[--n]; x=i%W; y=(i/W)|0;
+    for(var k=0;k<4;k++){
+      var j=I(x+D4[k][0],y+D4[k][1]);
+      if(j<0||openAir[j]) continue;
+      t=grid[j];
+      if(t!==0&&EL[t].t!=='gas') continue;
+      openAir[j]=1; stack[n++]=j;
+    }
+  }
+}
+
+/* ==================================================================
+   TICK
+   ================================================================== */
+function conduct(){
+  var k=0.28, airPull=0.035, matPull=0.0008;
+  for(var y=0;y<H;y++){
+    var row=y*W;
+    for(var x=0;x<W;x++){
+      var i=row+x, t=grid[i], c=EL[t].cond, v=temp[i];
+      if(c>0){
+        var s=0,n=0;
+        if(x>0){s+=temp[i-1];n++}
+        if(x<W-1){s+=temp[i+1];n++}
+        if(y>0){s+=temp[i-W];n++}
+        if(y<H-1){s+=temp[i+W];n++}
+        if(n) v+=(s/n-v)*c*k;
+      }
+      v+=(ambient-v)*(t===0?airPull:matPull);
+      temp2[i]=v;
+    }
+  }
+  var tmp=temp; temp=temp2; temp2=tmp;
+}
+
+function cellStep(x,y){
+  var i=y*W+x;
+  if(moved[i]) return;
+  var t=grid[i];
+  if(t===0) return;
+  moved[i]=1;
+  var p=EL[t];
+
+  if(p.melt&&temp[i]>=p.melt[0]){ setCell(i,p.melt[1]); return; }
+  if(p.frz&&temp[i]<=((t===E.WATER&&aux[i])?-18:p.frz[0])){ setCell(i,p.frz[1]); return; }
+
+  switch(t){
+    case E.FIRE:  burnStep(i,x,y); return;
+    case E.SPARK: sparkStep(i,x,y); return;
+    case E.CLONE: cloneStep(i,x,y); return;
+    case E.VOID:  voidStep(i,x,y); return;
+    case E.METAL: if(aux[i]>0) aux[i]--; rustStep(i,x,y); if(grid[i]!==E.METAL) return; if(!free[i]) return; break;
+    case E.LAVA:  if(lavaStep(i,x,y)) return; break;
+    case E.SMOKE: if(life[i]>0) life[i]--; else { grid[i]=0; return; } break;
+    case E.STEAM: if(steamStep(i,x,y)) return; break;
+    case E.WOOD:  if(aux[i]>0){ emberStep(i,x,y,p); return; } break;
+    case E.PLANT: if(aux[i]>0){ emberStep(i,x,y,p); return; } plantStep(i,x,y); break;
+    case E.ACID:  acidStep(i,x,y); if(grid[i]!==E.ACID) return; break;
+    case E.VIRUS: if(temp[i]>150){ setCell(i,E.SMOKE); return; } virusStep(i,x,y); break;
+    case E.SAND:  dampStep(i,x,y); break;
+    case E.WATER: if(aux[i]&&rnd()<0.25){        /* salinity spreads through the pool */
+                    var wj=I(x+D4[(rnd()*4)|0][0],y+D4[(rnd()*4)|0][1]);
+                    if(wj>=0&&grid[wj]===E.WATER) aux[wj]=1;
+                  } break;
+    case E.MERCURY: if(aux[i]>0) aux[i]--; break;
+    case E.SALT:  if(saltStep(i,x,y)) return; break;
+    case E.FOAM:  if(foamStep(i,x,y)) return; break;
+    case E.BATTERY: batteryStep(i,x,y); if(!free[i]) return; break;
+    case E.PUMP:   pumpStep(i,x,y);   if(!free[i]) return; break;
+    case E.PISTON: pistonStep(i,x,y); if(!free[i]) return; break;
+    case E.SENSOR: sensorStep(i,x,y); if(!free[i]) return; break;
+    case E.TIMER:  timerStep(i,x,y);  if(!free[i]) return; break;
+    case E.MAGNET: magnetStep(i,x,y); if(!free[i]) return; break;
+    case E.COAL:   if(aux[i]>0){ emberStep(i,x,y,p); return; } break;
+    case E.RELAY: if(aux[i]>0) aux[i]--; if(!free[i]) return; break;
+    case E.THERMITE: if(aux[i]>0){ thermiteStep(i,x,y); return; } break;
+  }
+  if(p.flam&&ignite(i,x,y,p)) return;
+
+  if(p.t==='gas'){
+    if(convect&&afx){ var a=airAt(x,y); vx[i]+=afx[a]*1.9; vy[i]+=afy[a]*1.9; }
+    /* Hot gas climbs harder than cool gas, so a fresh plume shoots up and a spent
+       one loiters and spreads. Without this every gas drifted at one lazy rate
+       whatever its temperature. */
+    var lift=(temp[i]-ambient)*0.0017; if(lift>0.20) lift=0.20; else if(lift<0) lift=0;
+    vx[i]=vx[i]*0.9-GX*lift; vy[i]=vy[i]*0.9-GY*lift;
+    var went2=ballistic(i,x,y,-1);
+    if(!went2) went2=rise(i,x,y);
+    if(t===E.STEAM) steamPressure(i,x,y,went2);
+    return;
+  }
+  var loose = p.t==='powder'||p.t==='liquid'||free[i];
+  if(loose){
+    vx[i]=vx[i]*DRAG+GX*GRAV; vy[i]=vy[i]*DRAG+GY*GRAV;
+    var s2=vx[i]*vx[i]+vy[i]*vy[i];
+    if(s2>MAXV*MAXV){ var sc=MAXV/Math.sqrt(s2); vx[i]*=sc; vy[i]*=sc; }
+    if(ballistic(i,x,y)) return;
+  }
+
+  var went;
+  if(p.t==='powder') went=fall(i,x,y);
+  else if(p.t==='liquid') went=flow(i,x,y);
+  else if(free[i]) went=fall(i,x,y);
+  else return;
+  /* Come to rest rather than pressing forever into whatever is holding us up. */
+  if(!went){ vx[i]*=0.35; vy[i]*=0.35; }
+}
+
+/* The whole pass sweeps one way, and the way flips each frame. It used to flip
+   per row as well, which cancels the left/right bias just as well but makes
+   neighbouring rows of one body behave as mirror images of each other: the edge
+   grain slides out on one row and stays put on the next, all the way up, and
+   what you see is a vertical dotted line down the side of anything that is
+   moving. Measured on a dropped block of sand, flipping per frame instead of per
+   row took the peak count of enclosed voids from 33 to 7, and a steady pour from
+   2 to 0, with the pile's centroid still landing within 0.04 cells of the
+   nozzle. */
+function rowPass(y){
+  if(frame&1){ for(var x=0;x<W;x++) cellStep(x,y); }
+  else { for(var x2=W-1;x2>=0;x2--) cellStep(x2,y); }
+}
+function colPass(x){
+  if(frame&1){ for(var y=0;y<H;y++) cellStep(x,y); }
+  else { for(var y2=H-1;y2>=0;y2--) cellStep(x,y2); }
+}
+
+function tick(){
+  frame++;
+  moved.fill(0);
+  conduct();
+  if(++supportAge>=6){ supportAge=0; supportScan(); }
+  if(++airAge>=8){ airAge=0; airScan(); }
+  if(convect) airStep();
+  if((frame&1)===0) liquidLevel();
+  if(lighting&&(frame&1)===1) lightPass();
+  bindChunks();
+  var a,b,s;
+  if(GY!==0){
+    if(GY>0){ for(a=H-1;a>=0;a--) rowPass(a); } else { for(a=0;a<H;a++) rowPass(a); }
+  } else if(GX!==0){
+    if(GX>0){ for(b=W-1;b>=0;b--) colPass(b); } else { for(b=0;b<W;b++) colPass(b); }
+  } else {
+    for(s=H-1;s>=0;s--) rowPass(s);
+  }
+  if(rain) drip();
+}
+
+function drip(){
+  var t = sel===E.EMPTY? E.WATER : sel;
+  if(t===E.SPARK) t=E.FIRE;
+  var count=Math.max(1,(W/44)|0);
+  for(var k=0;k<count;k++){
+    var x=(rnd()*W)|0, i=I(x,0);
+    if(i>=0&&grid[i]===0) setCell(i,t,true);
+  }
+}
+
+/* ==================================================================
+   UNDO
+   ================================================================== */
+/* One snapshot per stroke, not per cell - a stroke is the unit a person thinks
+   they made, so it is the unit they expect to take back. */
+function snapshot(){
+  if(!grid) return;
+  if(undoBuf.length>=UNDO_MAX) undoBuf.shift();
+  undoBuf.push({w:W,h:H,g:grid.slice(),t:temp.slice(),l:life.slice(),
+                a:aux.slice(),c:clr.slice(),ux:vx.slice(),uy:vy.slice(),fr:free.slice()});
+}
+function undo(){
+  var u=undoBuf.pop();
+  if(!u){ toast('Nothing to undo'); return; }
+  if(u.w!==W||u.h!==H){ undoBuf.length=0; toast('The box was resized - history is gone'); return; }
+  grid.set(u.g); temp.set(u.t); life.set(u.l); aux.set(u.a);
+  clr.set(u.c); vx.set(u.ux); vy.set(u.uy); free.set(u.fr);
+  toast('Undone');
+}
+
+/* Light spreads from anything that burns or glows and is stopped by solid matter,
+   so a pool of lava lights the rock around it. Two sweeps carry it across the whole
+   box; a per-cell flood would cost far more and look much the same. */
+function lightPass(){
+  var i,t,p,e;
+  for(i=0;i<N;i++){
+    t=grid[i];
+    if(t===0){ lite[i]=0; continue; }
+    p=EL[t];
+    e=p.glow?p.glow:0;
+    var h=(temp[i]-520)/900;
+    if(h>e) e=h>1?1:h;
+    lite[i]=e>0?e:0;
+  }
+  var open=0.94, solid=0.42, f, a, b, v;
+  for(i=0;i<N;i++){
+    t=grid[i];
+    f=(t!==0&&EL[t].t==='static'&&t!==E.GLASS)?solid:open;
+    v=lite[i];
+    if(i>=W){ a=lite[i-W]*f; if(a>v) v=a; }
+    if(i%W){ a=lite[i-1]*f; if(a>v) v=a; }
+    lite[i]=v;
+  }
+  for(i=N-1;i>=0;i--){
+    t=grid[i];
+    f=(t!==0&&EL[t].t==='static'&&t!==E.GLASS)?solid:open;
+    v=lite[i];
+    if(i<N-W){ b=lite[i+W]*f; if(b>v) v=b; }
+    if(i%W!==W-1){ b=lite[i+1]*f; if(b>v) v=b; }
+    lite[i]=v;
+  }
+}
+
+/* ==================================================================
+   PAINT
+   ================================================================== */
+function place(cx,cy,what){
+  var r=brush;
+  for(var dy=-r;dy<=r;dy++)for(var dx=-r;dx<=r;dx++){
+    if(shape==='circle'&&dx*dx+dy*dy>r*r) continue;
+    if(shape==='spray'&&(dx*dx+dy*dy>r*r||rnd()>0.2)) continue;
+    var i=I(cx+dx,cy+dy); if(i<0) continue;
+    if(what===E.SPARK){
+      var ht=grid[i];
+      if(ht===E.METAL||ht===E.MERCURY||ht===E.RELAY){
+        setCell(i,E.SPARK,true); aux[i]=ht===E.MERCURY?9:(ht===E.RELAY?8:0);
+      }
+      continue;
+    }
+    if(what===E.EMPTY){ grid[i]=0; life[i]=0; aux[i]=0; continue; }
+    /* A flame does not delete what it touches - it heats it, and whatever can
+       catch, catches. Dragging fire across a steel wall used to erase the wall a
+       cell at a time (1140 of 3000 cells in one stroke, measured), which reads
+       exactly like fire melting metal on contact. Now the steel just glows. */
+    if(what===E.FIRE&&grid[i]!==0){
+      var ft=grid[i];
+      if(EL[ft].imm) continue;
+      if(temp[i]<700) temp[i]=700;
+      if(EL[ft].flam&&EL[ft].t==='static'&&aux[i]===0) aux[i]=Math.min(255,EL[ft].burn||60);
+      continue;
+    }
+    if(fillOnly&&grid[i]!==0) continue;
+    setCell(i,what,true);
+    if(what===E.PUMP||what===E.PISTON) aux[i]=faceDir;
+  }
+}
+function stamp(x,y){
+  var what = erasing ? E.EMPTY : sel;
+  place(x,y,what);
+  if(sym&1) place(W-1-x,y,what);
+  if(sym&2) place(x,H-1-y,what);
+  if(sym===3) place(W-1-x,H-1-y,what);
+}
+function boxFill(x0,y0,x1,y1){
+  var ax=Math.min(x0,x1), bx=Math.max(x0,x1), ay=Math.min(y0,y1), by=Math.max(y0,y1);
+  for(var y=ay;y<=by;y++) for(var x=ax;x<=bx;x++) stamp(x,y);
+}
+function stroke(x0,y0,x1,y1){
+  var dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
+  var sx=x0<x1?1:-1, sy=y0<y1?1:-1, err=dx-dy, guard=0;
+  while(guard++<4000){
+    stamp(x0,y0);
+    if(x0===x1&&y0===y1) break;
+    var e2=2*err;
+    if(e2>-dy){ err-=dy; x0+=sx; }
+    if(e2<dx){ err+=dx; y0+=sy; }
+  }
+}
+
+/* ==================================================================
+   DRAW
+   ================================================================== */
+function heatHue(t,out){
+  var v=clamp((t+60)/1500,0,1);
+  var r,g,b;
+  if(v<0.25){ var u=v/0.25; r=8+u*10; g=20+u*70; b=90+u*150; }
+  else if(v<0.5){ var u2=(v-0.25)/0.25; r=18+u2*40; g=90+u2*140; b=240-u2*80; }
+  else if(v<0.72){ var u3=(v-0.5)/0.22; r=58+u3*200; g=230-u3*20; b=160-u3*140; }
+  else if(v<0.88){ var u4=(v-0.72)/0.16; r=255; g=210-u4*90; b=20+u4*10; }
+  else { var u5=(v-0.88)/0.12; r=255; g=120+u5*135; b=30+u5*215; }
+  out[0]=r; out[1]=g; out[2]=b;
+}
+var hc=[0,0,0];
+function paintBuffers(){
+  var d=img.data, gd=gimg.data, i, o, t, p, r, g, b, cv, gl;
+  for(i=0;i<N;i++){
+    o=i<<2; t=grid[i];
+    if(mode==='vel'){
+      var spd=Math.sqrt(vx[i]*vx[i]+vy[i]*vy[i]);
+      if(t===0||spd<0.05){ r=8; g=11; b=16; }
+      else { var q=clamp(spd/MAXV,0,1);
+        r=26+q*229; g=54+q*150-q*q*90; b=150-q*120+(q>0.85?(q-0.85)*900:0); }
+      gd[o]=0; gd[o+1]=0; gd[o+2]=0;
+    } else if(mode==='act'){
+      if(t===0){ r=7; g=10; b=14; }
+      else if(moved[i]){ r=250; g=214; b=110; }
+      else { r=34; g=41; b=52; }
+      gd[o]=0; gd[o+1]=0; gd[o+2]=0;
+    } else if(mode==='heat'){
+      heatHue(temp[i],hc);
+      r=hc[0]; g=hc[1]; b=hc[2];
+      if(t===0){ r*=0.34; g*=0.34; b*=0.34; }
+      gd[o]=0; gd[o+1]=0; gd[o+2]=0;
+    } else if(t===0){
+      r=9; g=12; b=17;
+      gd[o]=0; gd[o+1]=0; gd[o+2]=0;
+    } else {
+      p=EL[t];
+      cv=(clr[i]/255-0.5)*2*p.v;
+      r=p.c[0]+cv; g=p.c[1]+cv; b=p.c[2]+cv;
+      if(t===E.FIRE){
+        var f=clamp(life[i]/70,0,1);
+        r=255; g=88+f*152; b=18+f*96;
+      } else if(t===E.SMOKE){
+        var s=clamp(life[i]/120,0,1);
+        r=9+(r-9)*s; g=12+(g-12)*s; b=17+(b-17)*s;
+      } else if(t===E.STEAM){
+        /* Steam is thin where it is hottest and thickens as it cools, which is
+           how it actually looks: a jet leaving a boiler is nearly clear and the
+           white plume is the part that has already given its heat up. */
+        var sv=0.72+clamp((150-temp[i])/100,0,1)*0.28;
+        r=9+(r-9)*sv; g=12+(g-12)*sv; b=17+(b-17)*sv;
+      } else if(t===E.SAND&&aux[i]){
+        r*=0.66; g*=0.62; b*=0.60;
+      } else if(t===E.WATER&&aux[i]){
+        r=r*0.8+58; g=g*0.8+58; b=b*0.85+40;
+      } else {
+        var h=clamp((temp[i]-420)/1200,0,0.72);
+        if(h>0){ r=r+(255-r)*h; g=g+(212-g)*h*0.86; b=b+(126-b)*h*0.55; }
+      }
+      gl = p.glow ? p.glow : clamp((temp[i]-480)/900,0,1)*0.85;
+      if(t===E.SMOKE) gl=0;
+      if(lighting&&gl<0.05){
+        var sh2=AMB+(1-AMB)*(lite[i]>1?1:lite[i]);
+        r*=sh2; g*=sh2; b*=sh2;
+      }
+      if(gl>0){ gd[o]=r*gl; gd[o+1]=g*gl; gd[o+2]=b*gl; }
+      else { gd[o]=0; gd[o+1]=0; gd[o+2]=0; }
+    }
+    d[o]=r; d[o+1]=g; d[o+2]=b; d[o+3]=(mode==='mat'&&t===0)?0:255;
+  }
+  sctx.putImageData(img,0,0);
+  gctx.putImageData(gimg,0,0);
+}
+
+function draw(){
+  paintBuffers();
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.fillStyle='#090c11';
+  ctx.fillRect(0,0,CW,CH);
+  var ox=0, oy=0;
+  if(shake>0.2){ ox=(rnd()-0.5)*shake; oy=(rnd()-0.5)*shake; shake*=0.86; } else shake=0;
+  /* One dial. The halo comes up first and keeps every colour intact; past the
+     midpoint the glow also goes over the matter, which is what burns hot things
+     out to white. All the way up is the full blaze. */
+  var under = clamp(glowAmt*1.7,0,1);
+  var over  = clamp((glowAmt-0.42)/0.58,0,1)*2;
+  var lit = glowAmt>0.005&&mode==='mat';
+  if(lit){
+    gbctx.globalCompositeOperation='source-over';
+    gbctx.filter='none'; gbctx.globalAlpha=1;
+    gbctx.clearRect(0,0,W,H);
+    gbctx.globalCompositeOperation='lighter';
+    gbctx.globalAlpha=1;
+    gbctx.filter='blur(1.5px)'; gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(5px)';   gbctx.drawImage(glow,0,0);
+    gbctx.filter='blur(11px)';  gbctx.globalAlpha=0.85; gbctx.drawImage(glow,0,0);
+    gbctx.filter='none'; gbctx.globalAlpha=1;
+  }
+  if(lit&&under>0) paintGlow(ox,oy,under);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(sim,vx0(),vy0(),vw(),vh(),ox,oy,CW,CH);
+  if(lit&&over>0){
+    var whole=Math.floor(over), frac=over-whole, q;
+    for(q=0;q<whole;q++) paintGlow(ox,oy,1);
+    if(frac>0.01) paintGlow(ox,oy,frac);
+  }
+  if(px>=0){
+    var cw=CW/vw(), ch=CH/vh(), rr=(brush+0.5)*cw, sxo=vx0(), syo=vy0();
+    ctx.save();
+    ctx.strokeStyle=erasing?'rgba(255,255,255,.5)':swatchCSS(sel,0.85);
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    if(shape==='square') ctx.rect((px-sxo)*cw-rr,(py-syo)*ch-rr,rr*2,rr*2);
+    else ctx.arc((px-sxo)*cw+cw/2,(py-syo)*ch+ch/2,rr,0,6.2832);
+    ctx.stroke();
+    if(pressing&&anchorX>=0&&strokeMode!=='free'){
+      ctx.setLineDash([4,4]); ctx.globalAlpha=0.9;
+      ctx.beginPath();
+      if(strokeMode==='line'){
+        ctx.moveTo((anchorX-sxo)*cw+cw/2,(anchorY-syo)*ch+ch/2);
+        ctx.lineTo((px-sxo)*cw+cw/2,(py-syo)*ch+ch/2);
+      } else {
+        ctx.rect((Math.min(anchorX,px)-sxo)*cw,(Math.min(anchorY,py)-syo)*ch,
+                 (Math.abs(px-anchorX)+1)*cw,(Math.abs(py-anchorY)+1)*ch);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+function eyedrop(x,y){
+  var i=I(x,y);
+  setPick(0);
+  if(i<0||grid[i]===0){ toast('Nothing there'); return; }
+  pick(grid[i]);
+  toast('Picked up '+EL[grid[i]].n);
+}
+function setPick(on){
+  picking=on?1:0;
+  $('#bPick').setAttribute('aria-pressed',picking?'true':'false');
+}
+function probe(){
+  var el=$('#probe'), i=(px>=0&&py>=0)?I(px,py):-1;
+  if(i<0){ el.classList.remove('on'); return; }
+  el.classList.add('on');
+  var t=grid[i];
+  $('#probeName').textContent = t===0 ? 'Empty' : EL[t].n;
+  var note=Math.round(temp[i])+'°';
+  if(t===E.SAND&&aux[i]) note+=' · damp';
+  if(t===E.WATER&&aux[i]) note+=' · brine';
+  if(free[i]) note+=' · unsupported';
+  var spd=Math.sqrt(vx[i]*vx[i]+vy[i]*vy[i]);
+  if(spd>0.6) note+=' · '+spd.toFixed(1)+' cells/tick';
+  $('#probeTemp').textContent=note;
+}
+
+function vw(){ return W/zoom; }
+function vh(){ return H/zoom; }
+function vx0(){ return clamp(panX,0,W-vw()); }
+function vy0(){ return clamp(panY,0,H-vh()); }
+function setZoom(z,cx,cy){
+  var oldW=vw(), oldH=vh(), ox0=vx0(), oy0=vy0();
+  zoom=clamp(z,1,8);
+  if(cx===undefined){ cx=ox0+oldW/2; cy=oy0+oldH/2; }
+  panX=cx-(cx-ox0)/oldW*vw();
+  panY=cy-(cy-oy0)/oldH*vh();
+  panX=clamp(panX,0,W-vw()); panY=clamp(panY,0,H-vh());
+  var o=$('#oZoom'); if(o) o.textContent=(Math.round(zoom*10)/10)+'×';
+}
+function paintGlow(ox,oy,a){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.imageSmoothingEnabled=true;
+  ctx.globalAlpha=a;
+  ctx.drawImage(glowB,vx0(),vy0(),vw(),vh(),ox,oy,CW,CH);
+  ctx.restore();
+}
+
+function swatchCSS(id,a){
+  var c=EL[id].c;
+  return 'rgba('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+','+(a===undefined?1:a)+')';
+}
+
+/* ==================================================================
+   AUDIO
+   ================================================================== */
+var ac=null, noiseGain=null, band=null, soundOn=false;
+function audioBoot(){
+  try{
+    var AC=window.AudioContext||window.webkitAudioContext;
+    ac=new AC();
+    var len=ac.sampleRate*2, buf=ac.createBuffer(1,len,ac.sampleRate), ch=buf.getChannelData(0), b=0;
+    for(var i=0;i<len;i++){ var wv=rnd()*2-1; b=(b+0.02*wv)/1.02; ch[i]=b*3.2; }
+    var src=ac.createBufferSource(); src.buffer=buf; src.loop=true;
+    band=ac.createBiquadFilter(); band.type='bandpass'; band.frequency.value=700; band.Q.value=0.8;
+    noiseGain=ac.createGain(); noiseGain.gain.value=0;
+    src.connect(band); band.connect(noiseGain); noiseGain.connect(ac.destination);
+    src.start();
+  }catch(e){ ac=null; }
+}
+function thud(r){
+  if(!ac||!soundOn) return;
+  try{
+    var o=ac.createOscillator(), g=ac.createGain(), t=ac.currentTime;
+    o.type='sine';
+    o.frequency.setValueAtTime(95+r*3,t);
+    o.frequency.exponentialRampToValueAtTime(26,t+0.5);
+    g.gain.setValueAtTime(clamp(r/22,0,1)*0.42,t);
+    g.gain.exponentialRampToValueAtTime(0.0008,t+0.6);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t+0.66);
+  }catch(e){}
+}
+function audioTune(){
+  if(!ac||!soundOn||!noiseGain) return;
+  try{
+    var g=clamp(energetic/(N*0.015),0,1)*0.11;
+    noiseGain.gain.setTargetAtTime(g,ac.currentTime,0.25);
+    band.frequency.setTargetAtTime(280+clamp(meanT,0,1200)*1.5,ac.currentTime,0.35);
+  }catch(e){}
+}
+
+/* ==================================================================
+   SAVE / LOAD
+   ================================================================== */
+/* Run-length over material and a coarse temperature. Damp and brine are left out
+   on purpose - they re-establish themselves the moment the box runs again. */
+function q8(v){ var q=Math.round((v+60)/1660*255); return q<0?0:(q>255?255:q); }
+function q8back(q){ return q/255*1660-60; }
+function encodeBox(){
+  var out=[], m=grid[0], t=q8(temp[0]), c=0, i;
+  for(i=0;i<N;i++){
+    var mm=grid[i], tt=q8(temp[i]);
+    if(mm===m&&tt===t&&c<1000000){ c++; continue; }
+    out.push(m.toString(36)+':'+t.toString(36)+':'+c.toString(36));
+    m=mm; t=tt; c=1;
+  }
+  out.push(m.toString(36)+':'+t.toString(36)+':'+c.toString(36));
+  return 'CRU1|'+W+'|'+H+'|'+out.join(';');
+}
+function decodeBox(str){
+  if(!str) return false;
+  var head=str.split('|');
+  if(head.length<4||head[0]!=='CRU1') return false;
+  var sw=+head[1], sh=+head[2], runs=head[3].split(';');
+  if(!(sw>0&&sh>0)) return false;
+  var sg=new Uint8Array(sw*sh), st=new Float32Array(sw*sh), at=0, r, parts;
+  for(var k=0;k<runs.length;k++){
+    parts=runs[k].split(':');
+    if(parts.length!==3) continue;
+    var m=parseInt(parts[0],36), tq=parseInt(parts[1],36), c=parseInt(parts[2],36);
+    if(!(c>=0)||!(m>=0)||m>=EL.length) return false;
+    for(r=0;r<c&&at<sg.length;r++,at++){ sg[at]=m; st[at]=q8back(tq); }
+  }
+  snapshot();
+  for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+    var i=y*W+x, j=((y/H*sh)|0)*sw+((x/W*sw)|0);
+    setCell(i,sg[j],false); temp[i]=st[j];
+  }
+  return true;
+}
+function slotKey(n){ return 'crucible.slot'+n; }
+function safeGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function safeSet(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
+function buildSlots(){
+  var host=$('#slotList'), html='';
+  for(var n=1;n<=3;n++){
+    var has=!!safeGet(slotKey(n));
+    html+='<div class="slot"><button data-save="'+n+'">Save '+n+'</button>'+
+          '<button data-load="'+n+'" class="'+(has?'':'empty')+'">'+(has?'Load '+n:'empty')+'</button></div>';
+  }
+  host.innerHTML=html;
+}
+
+/* ==================================================================
+   SCENES
+   ================================================================== */
+function set(x,y,t,fresh){ var i=I(x,y); if(i>=0) setCell(i,t,fresh!==false); }
+function ground(frac,top,deep){
+  var base=(H*frac)|0;
+  for(var x=0;x<W;x++){
+    var g=base-((Math.abs(Math.sin(x*0.08))*2.4)|0);
+    for(var y=g;y<H;y++) set(x,y, y>g+3?deep:top);
+  }
+  return base;
+}
+var SCENES={
+  volcano:{title:'Volcano',blurb:'A vent at the summit that never stops giving.',run:function(){
+    wipe();
+    var cx=W>>1, base=(H*0.82)|0, peak=(H*0.32)|0, x, y;
+    for(x=0;x<W;x++){ var g=base-((Math.abs(Math.sin(x*0.07))*2)|0); for(y=g;y<H;y++) set(x,y,E.STONE); }
+    for(y=peak;y<base;y++){
+      var half=(((y-peak)*0.62)|0)+3;
+      for(x=cx-half;x<=cx+half;x++) set(x,y,E.STONE);
+    }
+    for(x=cx-1;x<=cx+1;x++) set(x,peak,E.CLONE);
+    for(x=cx-1;x<=cx+1;x++) set(x,peak-1,E.LAVA);
+    ambient=20; syncWorld();
+  }},
+  storm:{title:'Rainstorm',blurb:'Open sky, soft ground, water falling forever.',run:function(){
+    wipe(); ground(0.86,E.SAND,E.STONE);
+    for(var x=4;x<W;x+=17) for(var y=(H*0.86|0)-1;y>(H*0.86|0)-9;y--) set(x,y,E.PLANT);
+    pick(E.WATER); setRain(1); ambient=14; syncWorld();
+  }},
+  forest:{title:'Forest fire',blurb:'Six trees and one very bad idea on the left.',run:function(){
+    wipe();
+    var base=ground(0.87,E.SAND,E.STONE), x, y, tx, r, dx, dy;
+    for(tx=8;tx<W-6;tx+=Math.max(14,(W/7)|0)){
+      var hgt=14+((rnd()*10)|0);
+      for(y=base-1;y>base-hgt;y--){ set(tx,y,E.WOOD); set(tx+1,y,E.WOOD); }
+      var cy=base-hgt, rad=6;
+      for(dy=-rad;dy<=rad;dy++)for(dx=-rad;dx<=rad;dx++)
+        if(dx*dx+dy*dy<rad*rad&&rnd()<0.8) set(tx+dx,cy+dy,E.PLANT);
+    }
+    for(y=base-4;y<base;y++) for(x=2;x<7;x++) set(x,y,E.FIRE);
+    ambient=30; syncWorld();
+  }},
+  ice:{title:'Deep freeze',blurb:'A cold room, a frozen lake, one warm intrusion.',run:function(){
+    wipe(); var base=ground(0.88,E.STONE,E.STONE), x, y;
+    for(y=base-10;y<base;y++) for(x=0;x<W;x++) set(x,y, y<base-6?E.ICE:E.WATER);
+    for(x=(W>>1)-4;x<(W>>1)+4;x++) for(y=base-16;y<base-12;y++) set(x,y,E.LAVA);
+    ambient=-45; syncWorld();
+  }},
+  demo:{title:'Demolition',blurb:'A stone tower with a nitro heart. Touch it with fire.',run:function(){
+    wipe();
+    var base=ground(0.9,E.STONE,E.STONE), cx=W>>1, x, y;
+    for(y=base-38;y<base;y++) for(x=cx-9;x<=cx+9;x++){
+      if(Math.abs(x-cx)>6) set(x,y,E.STONE);
+      else if(y>base-8) set(x,y,E.GPOW);
+      else if(y>base-12&&Math.abs(x-cx)<4) set(x,y,E.NITRO);
+    }
+    for(y=base-9;y<base-8;y++) for(x=cx-6;x<=cx+6;x++) set(x,y,E.WOOD);
+    pick(E.FIRE); ambient=20; syncWorld();
+  }},
+  circuit:{title:'Live wire',blurb:'Metal rails wired to powder charges. Tap spark on a rail.',run:function(){
+    wipe();
+    var y0=(H*0.3)|0, x, y, k;
+    for(k=0;k<3;k++){
+      y=y0+k*((H*0.2)|0);
+      for(x=4;x<W-4;x++) set(x,y,E.METAL);
+      for(x=10+k*7;x<W-6;x+=22){
+        for(var d=1;d<7;d++) set(x,y+d,E.METAL);
+        for(var q=-2;q<=2;q++) for(var w=7;w<11;w++) set(x+q,y+w,E.GPOW);
+      }
+    }
+    ground(0.94,E.STONE,E.STONE);
+    pick(E.SPARK); ambient=20; syncWorld();
+  }},
+  vat:{title:'Acid vat',blurb:'Glass holds it. Nothing else in the tank does.',run:function(){
+    wipe();
+    var base=ground(0.92,E.STONE,E.STONE), left=(W*0.15)|0, right=(W*0.85)|0, top=(H*0.3)|0, x, y;
+    for(y=top;y<base;y++){ set(left,y,E.GLASS); set(right,y,E.GLASS); }
+    for(x=left;x<=right;x++) set(x,base-1,E.GLASS);
+    for(y=top+4;y<base-1;y++) for(x=left+1;x<right;x++) set(x,y,E.ACID);
+    for(x=left+6;x<right-6;x+=11) for(y=base-16;y<base-2;y++) set(x,y,E.METAL);
+    ambient=20; syncWorld();
+  }},
+  boiler:{title:'Boiler',blurb:'A sealed steel drum over a vent. Watch the pressure.',run:function(){
+    wipe();
+    var base=ground(0.94,E.STONE,E.STONE), cx=W>>1, x, y;
+    var x0=cx-13, x1=cx+13, y1=base-1, y0=base-26;
+    for(x=x0;x<=x1;x++){ set(x,y0,E.METAL); set(x,y1,E.METAL); }
+    for(y=y0;y<=y1;y++){ set(x0,y,E.METAL); set(x1,y,E.METAL); }
+    for(y=y0+1;y<y1;y++) for(x=x0+1;x<x1;x++) set(x,y,E.WATER);
+    for(x=x0-4;x<=x1+4;x++){ set(x,base,E.LAVA); set(x,base+1,E.CLONE); }
+    ambient=20; syncWorld();
+  }},
+  cut:{title:'Cutting charge',blurb:'Thermite on a steel beam. Water will not help.',run:function(){
+    wipe();
+    var base=ground(0.9,E.STONE,E.STONE), cx=W>>1, x, y;
+    for(y=base-9;y<base-2;y++) for(x=cx-20;x<=cx+20;x++) set(x,y,E.METAL);
+    for(y=base-16;y<base-9;y++) for(x=cx-8;x<=cx+8;x++) set(x,y,E.THERMITE);
+    for(y=base-26;y<base-20;y++) for(x=cx+13;x<=cx+19;x++) set(x,y,E.WATER);
+    pick(E.FIRE); ambient=20; syncWorld();
+  }},
+  gate:{title:'Relay gate',blurb:'The battery is live. The relay only opens once it is warm.',run:function(){
+    wipe();
+    var base=ground(0.93,E.STONE,E.STONE), y=(H*0.42)|0, x;
+    set(6,y,E.BATTERY);
+    for(x=7;x<(W>>1)-2;x++) set(x,y,E.METAL);
+    for(x=(W>>1)-2;x<=(W>>1)+2;x++) set(x,y,E.RELAY);
+    for(x=(W>>1)+3;x<W-10;x++) set(x,y,E.METAL);
+    for(x=W-12;x<W-6;x++) for(var d=1;d<7;d++) set(x,y+d,E.METAL);
+    for(x=W-13;x<W-5;x++) for(d=7;d<12;d++) set(x,y+d,E.GPOW);
+    pick(E.FIRE); ambient=20; syncWorld();
+  }},
+  quarry:{title:'Overhang',blurb:'Cut the pillar and the roof comes down on its own.',run:function(){
+    wipe();
+    var base=ground(0.95,E.STONE,E.STONE), x, y;
+    for(y=base-34;y<base-26;y++) for(x=(W>>1)-30;x<=(W>>1)+30;x++) set(x,y,E.STONE);
+    for(y=base-26;y<base;y++) for(x=(W>>1)-4;x<=(W>>1)+4;x++) set(x,y,E.STONE);
+    for(y=base-26;y<base;y++) for(x=(W>>1)-30;x<=(W>>1)-24;x++) set(x,y,E.STONE);
+    for(y=base-26;y<base;y++) for(x=(W>>1)+24;x<=(W>>1)+30;x++) set(x,y,E.STONE);
+    pick(E.EMPTY); ambient=20; syncWorld();
+  }},
+  chaos:{title:'Primordial soup',blurb:'A little of everything, dropped from height.',run:function(){
+    wipe();
+    var pool=[E.SAND,E.WATER,E.OIL,E.WOOD,E.PLANT,E.STONE,E.METAL,E.GPOW,E.ACID,E.ICE,E.LAVA,E.VIRUS];
+    for(var k=0;k<Math.max(30,(W*H)/220);k++){
+      var t=pool[(rnd()*pool.length)|0], cx=(rnd()*W)|0, cy=(rnd()*H*0.7)|0, r=2+((rnd()*5)|0);
+      for(var dy=-r;dy<=r;dy++)for(var dx=-r;dx<=r;dx++)
+        if(dx*dx+dy*dy<r*r) set(cx+dx,cy+dy,t);
+    }
+    ambient=20; syncWorld();
+  }}
+};
+
+/* ==================================================================
+   UI
+   ================================================================== */
+function toast(msg){
+  var el=$('#toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(toast._t); toast._t=setTimeout(function(){ el.classList.remove('show'); },1500);
+}
+function pick(id){
+  sel=id;
+  document.documentElement.style.setProperty('--sel',swatchCSS(id));
+  $('#heldSwatch').style.background=swatchCSS(id);
+  $('#heldName').textContent=EL[id].n;
+  $('#heldDesc').textContent=EL[id].desc;
+  var all=document.querySelectorAll('.sw');
+  for(var i=0;i<all.length;i++) all[i].setAttribute('aria-pressed', (+all[i].dataset.id===id)?'true':'false');
+}
+function buildTray(){
+  var host=$('#trayMat'), html='';
+  for(var c=0;c<CATS.length;c++){
+    var cat=CATS[c], items='';
+    for(var i=0;i<EL.length;i++){
+      if(EL[i].cat!==cat) continue;
+      items+='<button class="sw" data-id="'+i+'" style="--sw:'+swatchCSS(i)+'" aria-pressed="false">'+
+             '<i style="background:'+swatchCSS(i)+';color:'+swatchCSS(i)+'"></i>'+
+             '<em>'+EL[i].n+'</em><kbd>'+KEYS[i].toUpperCase()+'</kbd></button>';
+    }
+    html+='<div class="group"><h4>'+cat+'</h4><div class="swatches">'+items+'</div></div>';
+  }
+  host.innerHTML=html;
+  host.addEventListener('click',function(e){
+    var b=e.target.closest('.sw'); if(!b) return;
+    pick(+b.dataset.id);
+  });
+}
+function buildScenes(){
+  var host=$('#sceneList'), html='';
+  for(var k in SCENES){
+    html+='<button class="scene" data-k="'+k+'"><b>'+SCENES[k].title+'</b><s>'+SCENES[k].blurb+'</s></button>';
+  }
+  host.innerHTML=html;
+  host.addEventListener('click',function(e){
+    var b=e.target.closest('.scene'); if(!b) return;
+    snapshot();
+    setRain(0);            /* a scene that wants rain turns it back on itself */
+    SCENES[b.dataset.k].run();
+    paused=false; $('#bPlay').textContent='Pause';
+    toast(SCENES[b.dataset.k].title+' loaded');
+  });
+}
+function segment(id,fn,initial){
+  var host=$(id);
+  host.addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    var kids=host.querySelectorAll('button');
+    for(var i=0;i<kids.length;i++) kids[i].setAttribute('aria-pressed', kids[i]===b?'true':'false');
+    fn(b.dataset.v);
+  });
+  if(initial!==undefined) fn(initial);
+}
+function setRain(v){
+  rain=+v;
+  var kids=$('#segRain').querySelectorAll('button');
+  if(kids.length<2) return;
+  kids[0].setAttribute('aria-pressed', rain?'false':'true');
+  kids[1].setAttribute('aria-pressed', rain?'true':'false');
+}
+function syncWorld(){
+  $('#rAmb').value=ambient; $('#oAmb').textContent=Math.round(ambient)+'°';
+}
+function gravityFrom(v){
+  if(v==='d'){GX=0;GY=1} else if(v==='u'){GX=0;GY=-1}
+  else if(v==='l'){GX=-1;GY=0} else if(v==='r'){GX=1;GY=0}
+  else {GX=0;GY=0}
+}
+
+buildTray(); buildScenes(); buildSlots(); pick(E.SAND);
+
+$('#slotList').addEventListener('click',function(e){
+  var b=e.target.closest('button'); if(!b) return;
+  if(b.dataset.save){
+    if(safeSet(slotKey(b.dataset.save),encodeBox())){ buildSlots(); toast('Saved to slot '+b.dataset.save); }
+    else toast('This browser will not let the page store anything');
+    return;
+  }
+  var raw=safeGet(slotKey(b.dataset.load));
+  if(!raw){ toast('That slot is empty'); return; }
+  toast(decodeBox(raw)?'Loaded slot '+b.dataset.load:'That slot is damaged');
+});
+$('#bCopy').addEventListener('click',function(){
+  var t=$('#codeBox'); t.value=encodeBox(); t.focus(); t.select();
+  toast('Code ready - copy it with your keyboard or long-press');
+});
+$('#bLoadCode').addEventListener('click',function(){
+  toast(decodeBox($('#codeBox').value.trim())?'Loaded':'That does not look like a Crucible code');
+});
+
+$('#rSize').addEventListener('input',function(){ brush=+this.value; $('#oSize').textContent=brush; });
+var SPEED_LABEL=['¼×','½×','1×','2×','3×','4×'];
+$('#rSpeed').addEventListener('input',function(){
+  speed=SPEEDS[+this.value]; $('#oSpeed').textContent=SPEED_LABEL[+this.value];
+});
+$('#rAmb').addEventListener('input',function(){ ambient=+this.value; $('#oAmb').textContent=ambient+'°'; });
+$('#rWind').addEventListener('input',function(){ wind=+this.value; $('#oWind').textContent=(wind>0?'+':'')+wind; });
+$('#rGlow').addEventListener('input',function(){ glowAmt=(+this.value)/100; $('#oGlow').textContent=this.value+'%'; });
+
+segment('#segShape',function(v){ shape=v; });
+segment('#segStroke',function(v){ strokeMode=v; });
+segment('#segFace',function(v){ faceDir=+v; });
+segment('#segSym',function(v){ sym=+v; });
+segment('#segRain',function(v){ rain=+v; });
+segment('#segFill',function(v){ fillOnly=+v; });
+segment('#segGrav',function(v){ gravityFrom(v); });
+segment('#segEdge',function(v){ openEdge=+v; });
+segment('#segCollapse',function(v){ collapse=+v; if(!collapse) free.fill(0); });
+segment('#segConvect',function(v){ convect=+v; });
+segment('#segLight',function(v){ lighting=+v; });
+segment('#segView',function(v){ mode=v; });
+
+
+var tabs=document.querySelectorAll('.tab');
+for(var ti=0;ti<tabs.length;ti++){
+  tabs[ti].addEventListener('click',function(){
+    for(var i=0;i<tabs.length;i++) tabs[i].setAttribute('aria-selected','false');
+    this.setAttribute('aria-selected','true');
+    var trays=document.querySelectorAll('.tray');
+    for(var j=0;j<trays.length;j++) trays[j].classList.toggle('on',trays[j].dataset.tray===this.dataset.tray);
+    $('#dock').scrollTop=0;
+  });
+}
+
+$('#bPlay').addEventListener('click',function(){ paused=!paused; this.textContent=paused?'Resume':'Pause'; });
+$('#bStep').addEventListener('click',function(){ paused=true; $('#bPlay').textContent='Resume'; tick(); });
+$('#bWipe').addEventListener('click',function(){ snapshot(); wipe(); toast('Box emptied'); });
+$('#bUndo').addEventListener('click',undo);
+$('#bZoomIn').addEventListener('click',function(){ setZoom(zoom*1.5); });
+$('#bZoomOut').addEventListener('click',function(){ setZoom(zoom/1.5); });
+$('#bPan').addEventListener('click',function(){
+  panning=panning?0:1;
+  this.setAttribute('aria-pressed',panning?'true':'false');
+  toast(panning?'Drag to move the view':'Back to painting');
+});
+view.addEventListener('wheel',function(e){
+  e.preventDefault();
+  var c=toCell(e);
+  setZoom(zoom*(e.deltaY<0?1.18:1/1.18), c[0], c[1]);
+},{passive:false});
+$('#rLapse').addEventListener('input',function(){
+  var n=lapse.length, k=+this.value;
+  if(!n){ $('#oLapse').textContent='live'; return; }
+  if(k>=n){ $('#oLapse').textContent='live'; return; }
+  $('#oLapse').textContent=Math.round((n-k)*2)+'s ago';
+  decodeBox(lapse[k]);
+});
+function showMaterial(id){
+  var p=EL[id], rows=[], kind={powder:'Powder',liquid:'Liquid',gas:'Gas',static:'Solid',special:'Energy',none:'Tool'};
+  function row(k,v){ rows.push('<span>'+k+'</span><span>'+v+'</span>'); }
+  function cells(n){ return n+(n===1?' cell':' cells')+' a tick'; }
+  $('#msSwatch').style.background=swatchCSS(id);
+  $('#msName').textContent=p.n;
+  $('#msKind').textContent=(kind[p.t]||p.t)+' · '+p.cat+(KEYS[id]?' · key '+KEYS[id].toUpperCase():'');
+  $('#msDesc').textContent=p.desc;
+  if(p.imm) row('Density','Immovable');
+  else row('Density',p.d+' kg/m³');
+  row('Starts at',p.tmp+'°');
+  row('Carries heat',Math.round(p.cond*100)+'%');
+  if(p.melt) row('Melts at',p.melt[0]+'° into '+EL[p.melt[1]].n);
+  if(p.frz) row('Sets below',p.frz[0]+'° into '+EL[p.frz[1]].n);
+  if(id===E.STEAM) row('Condenses','below 100°, and much faster against anything cold');
+  if(p.flam){ row('Catches fire',(p.ign||0)+'° or from a flame'); if(p.burn) row('Burns for',p.burn+' ticks'); }
+  if(p.boom) row('Detonates','blast radius '+p.boom[0]+', '+p.boom[1]+'°');
+  if(p.sp) row('Spreads',cells(p.sp));
+  if(p.slide!==undefined) row('Slides',p.slide?cells(p.slide):'not at all — it holds a face');
+  if(p.life) row('Lasts',p.life+' ticks');
+  if(p.glow) row('Glows',Math.round(p.glow*100)+'%');
+  if(p.acid) row('Acid','does not touch it');
+  if(id===E.METAL||id===E.MERCURY||id===E.RELAY) row('Current','conducts a spark');
+  $('#msProps').innerHTML=rows.join('');
+  $('#matSheet').classList.add('on');
+}
+$('#held').addEventListener('click',function(){ showMaterial(sel); });
+$('#msClose').addEventListener('click',function(){ $('#matSheet').classList.remove('on'); });
+$('#matSheet').addEventListener('click',function(e){ if(e.target===this) this.classList.remove('on'); });
+$('#bPick').addEventListener('click',function(){ setPick(!picking); toast(picking?'Tap a cell to pick it up':'Back to painting'); });
+$('#bHelp').addEventListener('click',function(){ $('#help').classList.add('on'); });
+$('#bClose').addEventListener('click',function(){ $('#help').classList.remove('on'); });
+$('#help').addEventListener('click',function(e){ if(e.target===this) this.classList.remove('on'); });
+$('#bSound').addEventListener('click',function(){
+  if(!ac) audioBoot();
+  soundOn=!soundOn;
+  this.textContent=soundOn?'🔊':'🔇';
+  if(ac&&ac.state==='suspended') ac.resume();
+  if(!soundOn&&noiseGain) try{ noiseGain.gain.value=0; }catch(e){}
+  toast(soundOn?'Sound on — fire hisses, blasts thump':'Sound off');
+});
+
+/* ---- pointer ---- */
+function toCell(e){
+  var r=view.getBoundingClientRect();
+  return [ clamp((vx0()+(e.clientX-r.left)/r.width*vw())|0,0,W-1),
+           clamp((vy0()+(e.clientY-r.top)/r.height*vh())|0,0,H-1) ];
+}
+view.addEventListener('contextmenu',function(e){ e.preventDefault(); });
+view.addEventListener('pointerdown',function(e){
+  e.preventDefault();
+  view.setPointerCapture(e.pointerId);
+  var c=toCell(e); px=c[0]; py=c[1];
+  if(panning){ lastPX=e.clientX; lastPY=e.clientY; pressing=2; return; }
+  if(picking){ eyedrop(px,py); return; }
+  pressing=true; erasing=(e.button===2)||e.shiftKey;
+  snapshot();
+  lx=px; ly=py; anchorX=px; anchorY=py;
+  if(strokeMode==='free') stamp(px,py);
+});
+view.addEventListener('pointermove',function(e){
+  if(pressing===2){
+    var r=view.getBoundingClientRect();
+    panX=clamp(panX-(e.clientX-lastPX)/r.width*vw(),0,W-vw());
+    panY=clamp(panY-(e.clientY-lastPY)/r.height*vh(),0,H-vh());
+    lastPX=e.clientX; lastPY=e.clientY;
+    return;
+  }
+  var c=toCell(e); px=c[0]; py=c[1];
+  if(!pressing||strokeMode!=='free') return;
+  if(lx>=0) stroke(lx,ly,px,py); else stamp(px,py);
+  lx=px; ly=py;
+});
+function release(){
+  if(pressing===2){ pressing=false; return; }
+  if(pressing&&anchorX>=0&&px>=0){
+    if(strokeMode==='line') stroke(anchorX,anchorY,px,py);
+    else if(strokeMode==='box') boxFill(anchorX,anchorY,px,py);
+  }
+  pressing=false; lx=-1; ly=-1; anchorX=-1; anchorY=-1;
+}
+view.addEventListener('pointerup',release);
+view.addEventListener('pointercancel',release);
+view.addEventListener('pointerleave',function(){ if(!pressing){ px=-1; py=-1; } });
+
+/* ---- keys ---- */
+window.addEventListener('keydown',function(e){
+  if(e.target.tagName==='INPUT') return;
+  var k=e.key.toLowerCase(), idx=KEYS.indexOf(k);
+  if(e.ctrlKey||e.metaKey){
+    if(k==='z'){ e.preventDefault(); undo(); }
+    return;
+  }
+  if(idx>=0&&idx<EL.length){ pick(idx); toast(EL[idx].n); return; }
+  if(k===' '){ e.preventDefault(); paused=!paused; $('#bPlay').textContent=paused?'Resume':'Pause'; }
+  else if(k==='.'){ paused=true; $('#bPlay').textContent='Resume'; tick(); }
+  else if(k==='['){ brush=Math.max(1,brush-1); $('#rSize').value=brush; $('#oSize').textContent=brush; }
+  else if(k===']'){ brush=Math.min(34,brush+1); $('#rSize').value=brush; $('#oSize').textContent=brush; }
+  else if(k==='g'){
+    var order=['d','r','u','l','0'], cur=(GY>0?'d':GX>0?'r':GY<0?'u':GX<0?'l':'0');
+    var nxt=order[(order.indexOf(cur)+1)%order.length];
+    gravityFrom(nxt);
+    var kids=$('#segGrav').querySelectorAll('button');
+    for(var i=0;i<kids.length;i++) kids[i].setAttribute('aria-pressed',kids[i].dataset.v===nxt?'true':'false');
+    toast('Gravity: '+({d:'down',u:'up',l:'left',r:'right','0':'none'})[nxt]);
+  }
+  if(k==='f'){
+    fillOnly=fillOnly?0:1;
+    var fk=$('#segFill').querySelectorAll('button');
+    fk[0].setAttribute('aria-pressed',fillOnly?'false':'true');
+    fk[1].setAttribute('aria-pressed',fillOnly?'true':'false');
+    toast(fillOnly?'Filling gaps only':'Replacing what the brush covers');
+  }
+  else if(k==='h'){
+    var order=['mat','heat','vel','act'], names={mat:'Material view',heat:'Thermal view',vel:'Velocity view',act:'Activity view'};
+    mode=order[(order.indexOf(mode)+1)%order.length];
+    var vk=$('#segView').querySelectorAll('button');
+    for(var m=0;m<vk.length;m++) vk[m].setAttribute('aria-pressed',vk[m].dataset.v===mode?'true':'false');
+    toast(names[mode]);
+  }
+  else if(k==='backspace'){ e.preventDefault(); wipe(); toast('Box emptied'); }
+});
+
+/* ---- resize ---- */
+var rt=null;
+function refit(){ clearTimeout(rt); rt=setTimeout(function(){ fit(true); },160); }
+window.addEventListener('resize',refit);
+if(window.ResizeObserver){
+  var lastW=0,lastH=0;
+  new ResizeObserver(function(){
+    var r=stage.getBoundingClientRect();
+    if(r.width<4||r.height<4) return;
+    if(Math.abs(r.width-lastW)<2&&Math.abs(r.height-lastH)<2) return;
+    lastW=r.width; lastH=r.height; refit();
+  }).observe(stage);
+}
+
+/* ==================================================================
+   LOOP
+   ================================================================== */
+function stats(){
+  var m=0,sum=0,hot=0;
+  for(var i=0;i<N;i+=3){
+    if(grid[i]!==0){ m++; sum+=temp[i]; var t=grid[i];
+      if(t===E.FIRE||t===E.LAVA||t===E.SPARK) hot++; }
+  }
+  mass=m*3; meanT=m? sum/m : ambient; energetic=hot*3;
+  $('#gMass').textContent = mass>9999 ? (mass/1000).toFixed(1)+'k' : mass;
+  $('#gTemp').textContent = Math.round(meanT)+'°';
+  $('#gFps').textContent = Math.round(fps);
+}
+
+function loop(ts){
+  requestAnimationFrame(loop);
+  var dt = ts-last; last=ts;
+  if(dt>0&&dt<500) fps = fps*0.92 + (1000/dt)*0.08;
+  if(!paused){
+    tickAcc+=speed;
+    var guard=0;
+    while(tickAcc>=1&&guard++<6){ tick(); tickAcc-=1; }
+    if(tickAcc>2) tickAcc=0;
+  }
+  if(pressing===true&&px>=0&&strokeMode==='free') stamp(px,py);
+  draw(); probe();
+  if((frame&15)===0){ stats(); audioTune(); }
+  if(!paused&&++lapseAge>=120){
+    lapseAge=0;
+    lapse.push(encodeBox());
+    if(lapse.length>LAPSE_MAX) lapse.shift();
+    var rl=$('#rLapse');
+    rl.max=lapse.length; rl.value=lapse.length;
+    $('#oLapse').textContent='live';
+  }
+}
+
+fit(false);
+SCENES.volcano.run();
+requestAnimationFrame(function(t){ last=t; loop(t); });
+setTimeout(function(){ toast('Drag to pour. Try water on the lava.'); },700);
+})();
+</script>
+</body>
+</html>
