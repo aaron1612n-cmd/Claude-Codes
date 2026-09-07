@@ -112,20 +112,55 @@ Above `MaxTrackSpeed` the gap is allowed to grow. That is a deliberate trade:
 matching an absurd speed to hold the leash would itself be the detectable
 event.
 
+## The gap cuts both ways
+
+The server has exactly one position for you. Reach and range checks measure
+from *that* position to whatever you are interacting with. So:
+
+> Any gap large enough to protect you from incoming damage breaks your own
+> outgoing reach by exactly the same distance.
+
+There is no configuration that avoids this — it is what a single replicated
+position means. A game that rejects your attacks with "too far from target" is
+measuring from `serverCF`, and the fix is a smaller gap, not a different mode.
+
+`SHADOW` exists for exactly this: a gap small enough to stay inside the game's
+interaction range while still being a gap.
+
 ## Modes
 
-| Mode | `serverCF` target | Gap | Detectability |
-| --- | --- | --- | --- |
-| `ANCHOR` | fixed point where you switched on | grows to `MaxGap` | higher — the server sees you standing still while you move |
-| `TRAIL` | your own path, `TrailLag` seconds behind | roughly `TrailLag × your speed` | lowest — every position is one you genuinely occupied, in order |
+| Mode | `serverCF` target | Gap | Your reach | Speed signature |
+| --- | --- | --- | --- | --- |
+| `SHADOW` | rigid offset from your real position | constant, small | intact | none — speed is identically yours |
+| `TRAIL` | your own path, `TrailLag` seconds behind | `TrailLag × your speed` | broken past interaction range | none in steady state |
+| `ANCHOR` | fixed point where you switched on | grows to `MaxGap` | broken | a catch-up burst when the leash engages |
 
-`TRAIL` is the default. It emits no synthetic movement at all: the server is
-replayed real history, just late. There is nothing anomalous in the data for a
-heuristic to find — only latency, which is indistinguishable from a bad
-connection.
+`SHADOW` is the default. Because the offset is rigid, the target moves at
+exactly your speed and so does `serverCF` — there is no catch-up burst for a
+speed check to read, at any player speed. It is the only mode that leaves your
+own interactions working.
 
-`ANCHOR` gives a bigger gap and is what you want when the point is to be
-unhittable rather than unnoticed.
+Tune `ShadowOffset` rather than `MaxGap` in this mode. Straight down is a good
+default: it displaces you from your own hitbox without changing your horizontal
+distance to anything, so range checks on the horizontal plane are unaffected.
+
+`TRAIL` replays real history, just late. Nothing anomalous exists in the data —
+only latency, indistinguishable from a bad connection. Use it when the point is
+not to be hit and you do not need to act.
+
+`ANCHOR` gives the biggest gap and is the loudest. Its leash has to accelerate
+`serverCF` from a standstill to reel the gap back in, and that acceleration is
+the one speed signature the other two modes do not have.
+
+## Speed detection
+
+The floor on `serverCF`'s speed is derived from your own `WalkSpeed`, not a
+fixed number. An earlier version hardcoded 32 studs/s, which is twice the
+default `WalkSpeed` — so when `ANCHOR`'s leash engaged, the server watched the
+player travel at double a legitimate pace and games with speed checks flagged
+it. `SpeedFloorFactor` scales the derived floor if a game's threshold is
+looser; `MinSpeedFloor` keeps a resync from stalling at zero when `WalkSpeed`
+is 0 (seated, frozen, ragdolled).
 
 ## Transports
 
@@ -168,12 +203,13 @@ target.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `Mode` | `TRAIL` | `TRAIL` or `ANCHOR` |
+| `Mode` | `SHADOW` | `SHADOW`, `TRAIL` or `ANCHOR` |
+| `ShadowOffset` | `(0, -5, 0)` | the rigid offset in `SHADOW` mode |
 | `MaxGap` | 60 | the leash, in studs. Lower it until the game stops snapping you back |
-| `MaxServerSpeed` | 32 | floor on the speed budget |
+| `SpeedFloorFactor` | 1.0 | speed floor as a multiple of your `WalkSpeed` |
+| `MinSpeedFloor` | 8 | absolute floor, so `WalkSpeed = 0` can't stall a resync |
 | `MaxTrackSpeed` | 250 | hard ceiling; above this the gap grows instead |
 | `TrailLag` | 1.5 | seconds `TRAIL` runs behind you |
-| `ResyncSpeed` | 32 | floor on the walk-back speed |
 | `ResyncTolerance` | 2 | studs; resync is finished under this |
 
 ## Tuning against a game that snaps you back
@@ -193,7 +229,14 @@ survives that.
 luau roblox/tests/desync_math.lua
 ```
 
-Nine checks on the speed-cap and leash invariants: walking, sprinting past the
-floor, exceeding the ceiling, resync while idle and while still sprinting,
-cold-start first frame, clamped lag spikes, zero-distance chase, and the
-single-glitched-frame case.
+Checks on the speed and leash invariants: walking, sprinting past the floor,
+exceeding the ceiling, resync while idle and while still sprinting, cold-start
+first frame, clamped lag spikes, zero-distance chase, the single-glitched-frame
+case, `SHADOW` holding a constant gap at exactly the player's speed at both
+walking and sprinting pace, and the floor never exceeding `WalkSpeed`.
+
+The suite has caught two real design faults so far: a fixed speed cap that let
+the gap grow unbounded at 8409 studs, and a `SHADOW` acceleration transient
+where a low-passed speed estimate made `serverCF` drop behind on a sprint and
+then run at 126 studs/s to catch up — which is why `SHADOW` uses the
+instantaneous speed rather than the smoothed one.

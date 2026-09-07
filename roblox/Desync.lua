@@ -56,15 +56,33 @@
 local CONFIG = {
     ToggleKey = Enum.KeyCode.F,
 
-    Mode = "TRAIL",     -- "ANCHOR" or "TRAIL"
+    Mode = "SHADOW",    -- "SHADOW", "TRAIL" or "ANCHOR"
+
+    -- SHADOW mode: a rigid offset from wherever you actually are.
+    --
+    -- The gap is constant, so serverCF's speed is identically your speed —
+    -- there is no catch-up burst for a speed check to read, ever. And because
+    -- the gap stays small it sits inside a game's interaction range, so your
+    -- own attacks and interactions still land. That is the trade the other two
+    -- modes cannot make: any gap large enough to protect you from incoming
+    -- damage breaks your outgoing reach by exactly the same distance.
+    ShadowOffset = Vector3.new(0, -5, 0),
 
     -- The leash. How far the server's view of you may lag behind reality.
     -- Lower this until the game stops snapping you back.
     MaxGap = 60,        -- studs
 
-    -- Floor on how fast serverCF may travel. The actual cap is the greater of
-    -- this and your own observed speed — see trackSpeed() for why.
-    MaxServerSpeed = 32, -- studs/s
+    -- Floor on how fast serverCF may travel, as a multiple of your own
+    -- WalkSpeed. A hardcoded number was wrong here: 32 studs/s is twice the
+    -- default WalkSpeed, so any game watching speed sees the leash catch up at
+    -- double your legitimate pace and calls it speeding. Deriving the floor
+    -- from WalkSpeed means the server never sees you exceed a speed you are
+    -- actually capable of. Raise it only if a game's threshold is looser.
+    SpeedFloorFactor = 1.0,
+
+    -- Absolute floor, so a WalkSpeed of 0 (frozen, seated, ragdolled) cannot
+    -- stall a resync at zero speed forever.
+    MinSpeedFloor = 8,   -- studs/s
 
     -- Hard ceiling on the speed serverCF will ever match, so a one-frame
     -- physics glitch or a game-scripted teleport can't unlock an arbitrarily
@@ -74,9 +92,8 @@ local CONFIG = {
     -- TRAIL mode: how far behind your real path the server trails you.
     TrailLag = 1.5,     -- seconds
 
-    -- Speed used to walk serverCF back to you when switching off. Same cap
-    -- applies; this is only ever lower or equal.
-    ResyncSpeed = 32,   -- studs/s
+    -- Resync uses the same WalkSpeed-derived floor. Walking the gap back at
+    -- your own walking speed is the most defensible thing the server can see.
 
     -- Consider the resync finished once the gap is under this.
     ResyncTolerance = 2, -- studs
@@ -103,6 +120,13 @@ local lastStep = os.clock()
 -- to match this, which is what lets the leash hold when you outrun the floor.
 local observedSpeed = 0
 local lastRealPos   = nil
+
+-- Unsmoothed, clamped. SHADOW uses this rather than the low-passed figure:
+-- a rigid offset needs exactly your instantaneous speed to hold station, and
+-- feeding it a lagging estimate makes serverCF drop behind on acceleration and
+-- then sprint to catch up — reintroducing the very burst SHADOW exists to
+-- avoid.
+local instantSpeed = 0
 
 -- Genuine client state, borrowed only for the length of a replication flush
 -- under the swap transport.
@@ -366,15 +390,17 @@ local function updateUI()
 end
 
 local function updateModeUI()
-    modeBtn.Text = "Mode: " .. CONFIG.Mode
-    modeBtn.TextColor3 = CONFIG.Mode == "ANCHOR"
-        and Color3.fromRGB(230, 140, 140)
-        or  Color3.fromRGB(140, 190, 230)
-    TweenService:Create(modeStroke, tweenInfo, {
-        Color = CONFIG.Mode == "ANCHOR"
-            and Color3.fromRGB(140, 70, 70)
-            or  Color3.fromRGB(70, 110, 150)
-    }):Play()
+    -- Colour tracks risk: green is reach-safe and speed-silent, blue is quiet
+    -- but breaks your own reach, red is the loud one.
+    local tint = {
+        SHADOW = { Color3.fromRGB(140, 220, 160), Color3.fromRGB(60, 130, 80)  },
+        TRAIL  = { Color3.fromRGB(140, 190, 230), Color3.fromRGB(70, 110, 150) },
+        ANCHOR = { Color3.fromRGB(230, 140, 140), Color3.fromRGB(140, 70, 70)  },
+    }
+    local t = tint[CONFIG.Mode] or tint.SHADOW
+    modeBtn.Text       = "Mode: " .. CONFIG.Mode
+    modeBtn.TextColor3 = t[1]
+    TweenService:Create(modeStroke, tweenInfo, { Color = t[2] }):Play()
 end
 
 -- ── Core ──────────────────────────────────────────────────────────────────────
@@ -392,6 +418,11 @@ local function modeTarget(realPos, now)
     if CONFIG.Mode == "ANCHOR" then
         return anchorCF.Position
     end
+    if CONFIG.Mode == "SHADOW" then
+        -- Rigid offset. Once established, the target moves at exactly your
+        -- speed, so serverCF does too and there is no burst to detect.
+        return realPos + CONFIG.ShadowOffset
+    end
     return trailPointAt(CONFIG.TrailLag, now) or realPos
 end
 
@@ -406,10 +437,22 @@ end
 -- because you really did move that fast. So the budget is the greater of the
 -- configured floor and your own smoothed speed, under a hard ceiling so a
 -- single glitched frame can't unlock an arbitrarily fast move.
+-- Derived from your own WalkSpeed rather than a fixed number, so the server
+-- never sees you travel faster than you are genuinely capable of travelling.
+local function speedFloor()
+    local ws = 16
+    if humanoid then
+        local ok, v = pcall(function() return humanoid.WalkSpeed end)
+        if ok and type(v) == "number" and v > 0 then ws = v end
+    end
+    return math.max(ws * CONFIG.SpeedFloorFactor, CONFIG.MinSpeedFloor)
+end
+
 local function trackSpeed(headroom)
+    local floor = speedFloor()
     return math.clamp(
-        math.max(CONFIG.MaxServerSpeed, observedSpeed * headroom),
-        CONFIG.MaxServerSpeed,
+        math.max(floor, observedSpeed * headroom),
+        floor,
         CONFIG.MaxTrackSpeed
     )
 end
@@ -472,6 +515,7 @@ local function onHeartbeat()
             (realPos - lastRealPos).Magnitude / dt,
             CONFIG.MaxTrackSpeed
         )
+        instantSpeed  = instant
         observedSpeed += (instant - observedSpeed) * math.min(1, dt * 8)
     end
     lastRealPos = realPos
@@ -482,10 +526,19 @@ local function onHeartbeat()
         -- Needs headroom over your current speed, otherwise a resync started
         -- while you are still running never converges.
         targetPos = realPos
-        speed     = math.max(CONFIG.ResyncSpeed, trackSpeed(1.15))
+        speed     = trackSpeed(1.15)
     else
         targetPos = modeTarget(realPos, now)
-        speed     = trackSpeed(1.05)
+        if CONFIG.Mode == "SHADOW" then
+            -- Mirror your motion 1:1. Steady state, serverCF's speed is
+            -- identically yours; the 1.05 only closes residual rounding.
+            local floor = speedFloor()
+            speed = math.clamp(
+                math.max(floor, instantSpeed * 1.05), floor, CONFIG.MaxTrackSpeed
+            )
+        else
+            speed = trackSpeed(1.05)
+        end
 
         -- The leash. Pull the target to within MaxGap of where you actually
         -- are, so the distance the game measures never crosses its threshold.
@@ -562,7 +615,7 @@ local function enable()
 end
 
 -- Switching off does not hand the server your real position. It walks
--- serverCF back to you at ResyncSpeed and only stops once it arrives, so the
+-- serverCF back to you at walking speed and only stops once it arrives, so the
 -- position history stays continuous and there is no teleport to detect.
 local function disable()
     if phase ~= PHASE_ON then return end
@@ -627,7 +680,8 @@ end)
 btn.Activated:Connect(toggle)
 
 modeBtn.Activated:Connect(function()
-    CONFIG.Mode = CONFIG.Mode == "TRAIL" and "ANCHOR" or "TRAIL"
+    local order = { SHADOW = "TRAIL", TRAIL = "ANCHOR", ANCHOR = "SHADOW" }
+    CONFIG.Mode = order[CONFIG.Mode] or "SHADOW"
     if phase == PHASE_ON then anchorCF = alive() and root.CFrame or anchorCF end
     updateModeUI()
 end)
