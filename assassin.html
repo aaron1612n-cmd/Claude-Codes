@@ -151,11 +151,46 @@
   .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
 
   /* ------------------------------ Controls ----------------------------- */
-  #act {
+  /* Both buttons stack in the bottom-right corner, in reach of one thumb.
+     The pad itself is transparent to touch so the stick still springs up
+     in the gaps between them. */
+  #pad {
     position: absolute;
     right: max(16px, env(safe-area-inset-right));
     bottom: max(22px, env(safe-area-inset-bottom));
     z-index: 12;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    pointer-events: none;
+  }
+  #pad.hide { display: none; }
+  #pad > button { pointer-events: auto; }
+
+  #toss {
+    width: clamp(54px, 15vw, 76px);
+    aspect-ratio: 1;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    gap: 4px;
+    padding: 0;
+    font: inherit;
+    font-size: clamp(5px, 1.5vw, 7px);
+    letter-spacing: 1px;
+    color: var(--dim);
+    background: rgba(255, 255, 255, .05);
+    border: 2px solid #2b3346;
+    cursor: pointer;
+    touch-action: none;
+  }
+  #toss .n { letter-spacing: 2px; font-size: clamp(7px, 2vw, 9px); }
+  #toss.live { color: var(--gold); border-color: #6a5a30; }
+  #toss.aiming { background: rgba(255, 194, 71, .2); border-color: var(--gold); }
+  #toss:disabled { opacity: .3; cursor: default; }
+
+  #act {
     width: clamp(72px, 21vw, 104px);
     aspect-ratio: 1;
     border-radius: 50%;
@@ -177,7 +212,13 @@
     border-color: #ff6b74;
     box-shadow: 0 0 26px rgba(255, 59, 71, .55);
   }
-  #act.hide { display: none; }
+  /* Hands full: the same button now sets the body down. */
+  #act.hold {
+    color: #14100a;
+    background: var(--gold);
+    border-color: #ffd88a;
+    box-shadow: 0 0 22px rgba(255, 194, 71, .45);
+  }
   #act:active { transform: scale(.94); }
 
   @media (prefers-reduced-motion: reduce) { #act { transition: none; } }
@@ -199,7 +240,12 @@
   </div>
 
   <button id="menuBtn" class="hide" type="button" aria-label="Menu">||</button>
-  <button id="act" class="hide" type="button">MOVE</button>
+  <div id="pad" class="hide">
+    <button id="toss" type="button" aria-label="Throw a stone">
+      <span>STONE</span><span class="n" id="tossN">&bull;&bull;&bull;</span>
+    </button>
+    <button id="act" type="button">MOVE</button>
+  </div>
 
   <!-- Mission select -->
   <div class="screen" id="menuScreen">
@@ -208,7 +254,9 @@
     <div id="missions"></div>
     <p class="fine">DRAG ANYWHERE TO MOVE &middot; NUDGE = SNEAK &middot; PUSH = RUN<br>
        STRIKE ONLY FROM BEHIND &middot; RUNNING IS LOUD<br>
-       TAP WITH A SECOND FINGER TO STRIKE</p>
+       TAP WITH A SECOND FINGER TO STRIKE<br>
+       THE SAME TAP LIFTS A BODY &middot; STASH IT IN COVER<br>
+       DRAG OFF THE STONE TO AIM &middot; NOISE PULLS THEM AWAY</p>
   </div>
 
   <!-- Briefing -->
@@ -283,6 +331,14 @@
   const NOISE_RUN  = 4.2;    // a sprint carries this far
   const NOISE_WALK = 1.2;
 
+  const LIFT_REACH  = 0.85;  // how close you must be to shoulder a body
+  const HAUL        = 0.5;   // stick magnitude cap while carrying — below
+                             // SILENT, so hauling is always quiet and slow
+  const THROW_FAR   = 5.2;   // furthest a stone will carry
+  const THROW_NEAR  = 1.6;   // a barely-there flick still goes this far
+  const THROW_SPEED = 9.5;   // tiles/sec in flight
+  const CLATTER     = 4.5;   // how far the landing is heard
+
   const SUSPECT_AT = 0.42;   // awareness thresholds
   const CAUGHT_AT  = 1.0;
   const FORGET     = 0.34;   // awareness bleeds off this fast per second
@@ -305,7 +361,7 @@
   const MISSIONS = [
     {
       name: "THE COURTYARD",
-      brief: "ONE MARK. TWO PATROLS.<br>LEARN THE RHYTHM, THEN WALK IN.",
+      brief: "ONE MARK. TWO PATROLS.<br>LEARN THE RHYTHM &mdash; OR THROW A STONE<br>AND MAKE ONE.",
       grid: [
         "##################",
         "#........#.......#",
@@ -322,6 +378,7 @@
         "#..,,.........X..#",
         "##################",
       ],
+      stones: 2,
       guards: [
         { at: [12, 2], path: [[12, 2], [16, 2], [16, 4], [12, 4]], mark: true, fov: 62, range: 6.5 },
         { at: [6, 8],  path: [[6, 8], [6, 12], [9, 12], [9, 8]],   fov: 62, range: 6.0 },
@@ -329,7 +386,7 @@
     },
     {
       name: "THE GALLERY",
-      brief: "TWO MARKS BEHIND THE HALLS.<br>THE LONG ROOM IS WATCHED FROM BOTH ENDS.",
+      brief: "TWO MARKS BEHIND THE HALLS.<br>THE LONG ROOM IS WATCHED FROM BOTH ENDS.<br>DRAG WHAT YOU LEAVE INTO THE GREEN.",
       grid: [
         "####################",
         "#P.......#.........#",
@@ -347,6 +404,7 @@
         "#.......#..........#",
         "####################",
       ],
+      stones: 3,
       guards: [
         { at: [14, 2],  path: [[14, 2], [18, 2], [18, 4], [14, 4]],  mark: true, fov: 60, range: 6.5 },
         { at: [16, 12], path: [[16, 12], [10, 12], [10, 13], [16, 13]], mark: true, fov: 60, range: 6.5 },
@@ -356,7 +414,7 @@
     },
     {
       name: "THE VAULT",
-      brief: "TWO MARKS, SIX EYES BETWEEN THEM.<br>NOTHING HERE IS UNWATCHED FOR LONG.",
+      brief: "TWO MARKS, SIX EYES BETWEEN THEM.<br>NOTHING HERE IS UNWATCHED FOR LONG.<br>THREE STONES. SPEND THEM WELL.",
       grid: [
         "####################",
         "#........##........#",
@@ -374,6 +432,7 @@
         "#..,,....#....,,..X#",
         "####################",
       ],
+      stones: 3,
       guards: [
         { at: [15, 2],  path: [[15, 2], [18, 2], [18, 4], [15, 4]],   mark: true, fov: 58, range: 6.5 },
         { at: [14, 12], path: [[14, 12], [10, 12], [10, 13], [14, 13]], mark: true, fov: 58, range: 6.5 },
@@ -433,6 +492,10 @@
       px: start[0], py: start[1],
       pang: 0, pspeed: 0,
       bodies: [],
+      carry: null,            // the body on your shoulder, or null
+      stones: m.stones ?? 3,  // distractions left to throw
+      thrown: [],             // stones in flight
+      landed: [],             // where one just hit, for the noise ring
       marks: guards.filter(g => g.mark).length,
       status: "run",          // run | fail | win
       reason: "",
@@ -574,7 +637,10 @@
     W.time += dt;
 
     // --- player -----------------------------------------------------
-    const mag = Math.min(1, Math.hypot(input.mx, input.my));
+    let mag = Math.min(1, Math.hypot(input.mx, input.my));
+    // A body on your shoulder pins you under SILENT: hauling is always
+    // quiet, and always too slow to outrun anything.
+    if (W.carry) mag = Math.min(mag, HAUL);
     if (mag > 0.02) {
       const s = RUN * mag * dt;
       const nx = input.mx / (Math.hypot(input.mx, input.my) || 1);
@@ -599,18 +665,67 @@
       }
     }
 
+    if (W.carry) {
+      const b = W.carry;
+      const bx = W.px - Math.cos(W.pang) * 0.42;
+      const by = W.py - Math.sin(W.pang) * 0.42;
+      const clear = !isWall(W, bx, by);
+      b.x = clear ? bx : W.px;
+      b.y = clear ? by : W.py;
+      b.ang = W.pang;
+    }
+
     const hidden = inBush(W, W.px, W.py);
     const noise = mag > 0.82 ? NOISE_RUN : mag > SILENT ? NOISE_WALK : 0;
 
-    // --- strike -----------------------------------------------------
+    // --- the action button: strike, shoulder a body, or set it down ----
+    // The three can never overlap, so they share one button and one tap:
+    // your hands are either free or they are full.
     if (input.act) {
-      const t = strikeTarget(W);
-      if (t) {
-        t.state = STATE.DEAD;
-        t.aware = 0;
-        W.bodies.push({ x: t.x, y: t.y, ang: t.ang, seen: false });
-        if (t.mark) W.marks--;
-        W.lastKill = W.time;
+      if (W.carry) {
+        W.carry = null;
+      } else {
+        const t = strikeTarget(W);
+        if (t) {
+          t.state = STATE.DEAD;
+          t.aware = 0;
+          W.bodies.push({ x: t.x, y: t.y, ang: t.ang, seen: false });
+          if (t.mark) W.marks--;
+          W.lastKill = W.time;
+        } else {
+          W.carry = bodyInReach(W);
+        }
+      }
+    }
+
+    // --- stones ---------------------------------------------------------
+    // Throwing is the only way to move a guard that does not involve being
+    // seen by one. It costs a stone, and you never get it back.
+    if (input.throw && W.stones > 0 && !W.carry) {
+      const a = input.throw;
+      const d = Math.hypot(a.dx, a.dy);
+      if (d > 0.0001) {
+        const pow = Math.max(0, Math.min(1, a.power));
+        W.stones--;
+        W.thrown.push({
+          x: W.px, y: W.py,
+          dx: a.dx / d, dy: a.dy / d,
+          left: THROW_NEAR + (THROW_FAR - THROW_NEAR) * pow,
+        });
+      }
+    }
+
+    for (let i = W.thrown.length - 1; i >= 0; i--) {
+      const st = W.thrown[i];
+      const step = Math.min(THROW_SPEED * dt, st.left);
+      const nx = st.x + st.dx * step, ny = st.y + st.dy * step;
+      st.left -= step;
+      if (isWall(W, nx, ny)) st.left = 0;   // a wall stops it where it struck
+      else { st.x = nx; st.y = ny; }
+      if (st.left <= 0.0001) {
+        W.thrown.splice(i, 1);
+        W.landed.push([st.x, st.y]);
+        clatter(W, st.x, st.y);
       }
     }
 
@@ -646,8 +761,10 @@
 
       // A corpse in view is as good as an alarm.
       for (const b of W.bodies) {
-        if (b.seen) continue;
-        if (guardSees(W, g, b.x, b.y, false)) {
+        if (b.seen || b === W.carry) continue;
+        // Cover works on a corpse exactly as it works on you: it goes
+        // unnoticed past 1.6 tiles, and no further.
+        if (guardSees(W, g, b.x, b.y, inBush(W, b.x, b.y))) {
           b.seen = true;
           g.state = STATE.HUNT;
           g.goal = [b.x, b.y];
@@ -736,6 +853,50 @@
     return best;
   }
 
+  /**
+   * Where a stone thrown this way would come to rest. Walks the same steps
+   * the simulation will, so the aim line does not lie.
+   */
+  function throwLanding(W, dx, dy, power) {
+    const reach = THROW_NEAR + (THROW_FAR - THROW_NEAR) * Math.max(0, Math.min(1, power));
+    const step = THROW_SPEED * DT;
+    let x = W.px, y = W.py, left = reach;
+    while (left > 0.0001) {
+      const d = Math.min(step, left);
+      const nx = x + dx * d, ny = y + dy * d;
+      left -= d;
+      if (isWall(W, nx, ny)) break;
+      x = nx; y = ny;
+    }
+    return [x, y];
+  }
+
+  /** The nearest body you could get your hands on right now, or null. */
+  function bodyInReach(W) {
+    let best = null, bestD = LIFT_REACH;
+    for (const b of W.bodies) {
+      const d = Math.hypot(W.px - b.x, W.py - b.y);
+      if (d < bestD) { best = b; bestD = d; }
+    }
+    return best;
+  }
+
+  /**
+   * A stone lands. Anyone not already hunting goes to look — which means
+   * turning their back on wherever the stone came from.
+   */
+  function clatter(W, x, y) {
+    for (const g of W.guards) {
+      if (g.state === STATE.DEAD || g.state === STATE.HUNT) continue;
+      if (Math.hypot(g.x - x, g.y - y) > CLATTER) continue;
+      g.state = STATE.SUSPECT;
+      g.goal = [x, y];
+      g.route = null;
+      g.hold = 2.8;
+      g.aware = Math.max(g.aware, SUSPECT_AT);
+    }
+  }
+
   // ===================================================================
   // Presentation
   // ===================================================================
@@ -748,6 +909,9 @@
   const hudHint = document.getElementById("hudHint");
   const alertTag = document.getElementById("alertTag");
   const actBtn = document.getElementById("act");
+  const pad = document.getElementById("pad");
+  const tossBtn = document.getElementById("toss");
+  const tossN = document.getElementById("tossN");
   const menuBtn = document.getElementById("menuBtn");
   const missionsBox = document.getElementById("missions");
 
@@ -766,9 +930,10 @@
   let mode = "menu";      // menu | brief | play | pause | fail | win
   let acc = 0, last = 0;
   let sparks = [];
+  let rings = [];
   let shake = 0;
 
-  const input = { mx: 0, my: 0, act: false };
+  const input = { mx: 0, my: 0, act: false, throw: null };
   const keys = new Set();
 
   // --- layout --------------------------------------------------------
@@ -882,15 +1047,20 @@
 
     // --- bodies ----------------------------------------------------------
     for (const b of W.bodies) {
+      // A body in cover is drawn faint: that is the whole tell that it is
+      // stashed rather than lying in the open.
+      const stashed = b !== W.carry && inBush(W, b.x, b.y);
       ctx.save();
+      ctx.globalAlpha = stashed ? 0.4 : 1;
       ctx.translate(px(b.x), py(b.y));
       ctx.rotate(b.ang);
       ctx.fillStyle = "rgba(120,30,38,.5)";
       ctx.beginPath(); ctx.ellipse(0, 0, S * .5, S * .34, 0, 0, 7); ctx.fill();
-      ctx.fillStyle = "#4a2028";
+      ctx.fillStyle = b === W.carry ? "#6b2f38" : "#4a2028";
       ctx.fillRect(-S * .3, -S * .18, S * .6, S * .36);
       ctx.restore();
     }
+    ctx.globalAlpha = 1;
 
     // --- guards -----------------------------------------------------------
     for (const g of W.guards) {
@@ -941,11 +1111,49 @@
       ctx.restore();
 
       // Reach ring when a takedown is available.
-      if (strikeTarget(W)) {
+      if (!W.carry && strikeTarget(W)) {
         ctx.strokeStyle = "rgba(255,59,71,.85)";
         ctx.lineWidth = Math.max(1.5, S * .06);
         ctx.beginPath(); ctx.arc(px(W.px), py(W.py), S * .5 + Math.sin(W.time * 12) * S * .05, 0, 7); ctx.stroke();
       }
+    }
+
+    // --- stones in flight, and the noise they make ----------------------------
+    for (const st of W.thrown) {
+      ctx.fillStyle = "#ffe2a0";
+      ctx.fillRect(px(st.x) - S * .08, py(st.y) - S * .08, S * .16, S * .16);
+    }
+    for (const r of rings) {
+      const k = r.age / r.life;
+      ctx.globalAlpha = Math.max(0, 1 - k) * .8;
+      ctx.strokeStyle = "#ffc247";
+      ctx.lineWidth = Math.max(1.5, S * .05);
+      ctx.beginPath(); ctx.arc(px(r.x), py(r.y), CLATTER * S * k, 0, 7); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // --- aim line -------------------------------------------------------------
+    if (aim.on && W.stones > 0 && !W.carry) {
+      const dx = aim.moved ? aim.dx : Math.cos(W.pang);
+      const dy = aim.moved ? aim.dy : Math.sin(W.pang);
+      const [lx, ly] = throwLanding(W, dx, dy, aim.moved ? aim.power : 1);
+      ctx.save();
+      // Keep the overlay inside the map — the noise circle is wider than
+      // some rooms and would otherwise spill over the HUD.
+      ctx.beginPath();
+      ctx.rect(px(0), py(0), W.w * S, W.h * S);
+      ctx.clip();
+      ctx.strokeStyle = "rgba(255,194,71,.8)";
+      ctx.lineWidth = Math.max(1.5, S * .05);
+      ctx.setLineDash([S * .18, S * .18]);
+      ctx.beginPath(); ctx.moveTo(px(W.px), py(W.py)); ctx.lineTo(px(lx), py(ly)); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(px(lx), py(ly), S * .22, 0, 7); ctx.stroke();
+      // The circle the clatter will be heard inside.
+      ctx.globalAlpha = .35;
+      ctx.setLineDash([S * .12, S * .3]);
+      ctx.beginPath(); ctx.arc(px(lx), py(ly), CLATTER * S, 0, 7); ctx.stroke();
+      ctx.restore();
     }
 
     // --- sparks --------------------------------------------------------------
@@ -1025,8 +1233,48 @@
   window.addEventListener("pointerup", dropStick);
   window.addEventListener("pointercancel", dropStick);
 
-  // Strike button
+  // Action button — strike, lift, or drop, whichever the world offers.
   actBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); if (mode === "play") input.act = true; });
+
+  // ===================================================================
+  // Throwing — press the stone, drag to aim, let go. A press with no drag
+  // is a full-strength throw the way you are already facing, so the whole
+  // thing still works as a single tap.
+  // ===================================================================
+  const aim = { on: false, id: null, moved: false, dx: 0, dy: 0, power: 1, cx: 0, cy: 0, r: 60 };
+
+  tossBtn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (mode !== "play" || !W || W.stones <= 0 || W.carry) return;
+    const rc = tossBtn.getBoundingClientRect();
+    aim.on = true; aim.id = e.pointerId; aim.moved = false;
+    aim.cx = rc.left + rc.width / 2; aim.cy = rc.top + rc.height / 2;
+    aim.dx = 0; aim.dy = 0; aim.power = 1;
+    aim.r = Math.min(app.clientWidth, app.clientHeight) * 0.16;
+    tossBtn.classList.add("aiming");
+  });
+
+  window.addEventListener("pointermove", (e) => {
+    if (!aim.on || e.pointerId !== aim.id) return;
+    const dx = e.clientX - aim.cx, dy = e.clientY - aim.cy;
+    const d = Math.hypot(dx, dy);
+    if (d < 14) { aim.moved = false; return; }   // still a tap
+    aim.moved = true;
+    aim.dx = dx / d; aim.dy = dy / d;
+    aim.power = Math.min(1, d / aim.r);
+  });
+
+  function releaseAim(e) {
+    if (!aim.on || (e && e.pointerId !== aim.id)) return;
+    aim.on = false; aim.id = null;
+    tossBtn.classList.remove("aiming");
+    if (mode !== "play" || !W) return;
+    input.throw = aim.moved
+      ? { dx: aim.dx, dy: aim.dy, power: aim.power }
+      : { dx: Math.cos(W.pang), dy: Math.sin(W.pang), power: 1 };
+  }
+  window.addEventListener("pointerup", releaseAim);
+  window.addEventListener("pointercancel", releaseAim);
 
   // ===================================================================
   // Keyboard
@@ -1041,6 +1289,11 @@
       e.preventDefault();
       if (mode === "play") input.act = true;
       else if (mode === "brief") begin();
+      return;
+    }
+    if (k === "q" || k === "f") {
+      e.preventDefault();
+      if (mode === "play" && W) input.throw = { dx: Math.cos(W.pang), dy: Math.sin(W.pang), power: 1 };
       return;
     }
     if (k === "Escape" || k === "p") { mode === "play" ? pause() : mode === "pause" ? resume() : 0; }
@@ -1088,7 +1341,7 @@
     for (const s of [menuScreen, briefScreen, pauseScreen, failScreen, winScreen]) s.hidden = (s !== screen);
     const playing = screen === null;
     hud.classList.toggle("hide", !playing);
-    actBtn.classList.toggle("hide", !playing);
+    pad.classList.toggle("hide", !playing);
     menuBtn.classList.toggle("hide", !playing);
   }
 
@@ -1102,9 +1355,10 @@
 
   function begin() {
     W = loadMission(MISSIONS[mi]);
-    sparks = []; shake = 0; acc = 0;
-    input.mx = input.my = 0; input.act = false;
+    sparks = []; rings = []; shake = 0; acc = 0;
+    input.mx = input.my = 0; input.act = false; input.throw = null;
     stick.on = false; stick.id = null;
+    aim.on = false; aim.id = null; tossBtn.classList.remove("aiming");
     keys.clear();
     layout();
     hudName.textContent = MISSIONS[mi].name;
@@ -1118,6 +1372,7 @@
     if (mode !== "play") return;
     mode = "pause";
     dropStick();
+    aim.on = false; aim.id = null; tossBtn.classList.remove("aiming");
     document.getElementById("pauseInfo").innerHTML =
       MISSIONS[mi].name + "<br>MARKS LEFT " + W.marks;
     show(pauseScreen);
@@ -1139,9 +1394,18 @@
     alertTag.textContent = hunting ? "HUNTED" : susp ? "SEARCHING" : "CALM";
     alertTag.className = hunting ? "hunt" : susp ? "susp" : "";
     hudHint.textContent = W.marks > 0 ? "TAKE THE MARKS" : "GET TO THE EXIT";
-    const ready = !!strikeTarget(W);
+
+    // One button, whichever verb the moment allows.
+    const carrying = !!W.carry;
+    const ready = !carrying && !!strikeTarget(W);
+    const lift = !carrying && !ready && !!bodyInReach(W);
     actBtn.classList.toggle("ready", ready);
-    actBtn.textContent = ready ? "STRIKE" : "—";
+    actBtn.classList.toggle("hold", carrying || lift);
+    actBtn.textContent = carrying ? "DROP" : ready ? "STRIKE" : lift ? "LIFT" : "—";
+
+    tossN.textContent = W.stones > 0 ? "•".repeat(W.stones) : "—";
+    tossBtn.disabled = W.stones <= 0 || carrying;
+    tossBtn.classList.toggle("live", W.stones > 0 && !carrying);
   }
 
   function spark(x, y, n, c) {
@@ -1167,7 +1431,8 @@
         acc -= DT;
         const before = W.bodies.length;
         stepWorld(W, input, DT);
-        input.act = false;                       // strike is edge-triggered
+        input.act = false;                       // both are edge-triggered
+        input.throw = null;
         if (W.bodies.length > before) {
           const b = W.bodies[W.bodies.length - 1];
           spark(b.x, b.y, 14, "#ff3b47");
@@ -1175,6 +1440,10 @@
         }
         if (W.status !== "run") break;
       }
+      // Each landing gets one expanding ring, drawn at the radius the
+      // clatter actually carries.
+      for (const [lx, ly] of W.landed) rings.push({ x: lx, y: ly, age: 0, life: .75 });
+      W.landed.length = 0;
       updateHud();
 
       if (W.status === "fail") {
@@ -1197,6 +1466,8 @@
 
     for (const s of sparks) { s.age += dt; s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= .92; s.vy *= .92; }
     sparks = sparks.filter(s => s.age < s.life);
+    for (const r of rings) r.age += dt;
+    rings = rings.filter(r => r.age < r.life);
     if (shake > 0) shake = Math.max(0, shake - dt * 2);
 
     draw();
@@ -1227,7 +1498,8 @@
   // Headless hook: the simulation is deterministic, so a bot can play the
   // missions and prove they can actually be completed.
   window.AssassinDebug = {
-    MISSIONS, loadMission, stepWorld, strikeTarget, findPath, guardSees, clearLine, inBush, isWall, STATE, DT,
+    MISSIONS, loadMission, stepWorld, strikeTarget, bodyInReach, clatter, throwLanding,
+    findPath, guardSees, clearLine, inBush, isWall, STATE, DT,
     open: (i) => { W = loadMission(MISSIONS[i]); mi = i; layout(); return W; },
     get world() { return W; },
     get mode() { return mode; },
