@@ -24,6 +24,7 @@ local lp = Players.LocalPlayer
 -- ── State ─────────────────────────────────────────────────────────────────────
 local active        = false
 local anchorCF      = CFrame.new()
+local clientCF      = CFrame.new()  -- visual position, independent of replication
 local heartbeatConn = nil
 local char, root, humanoid
 
@@ -191,6 +192,7 @@ local function enable()
     if active or not root then return end
     active   = true
     anchorCF = root.CFrame
+    clientCF = root.CFrame  -- start client visual at same spot
 
     freezeHumanoid(true)
 
@@ -244,6 +246,8 @@ local keyMap = {
 RunService.RenderStepped:Connect(function(dt)
     if not active or not root then return end
 
+    -- Accumulate movement into clientCF (not root.CFrame, which Stepped
+    -- resets to anchorCF every tick for replication).
     local dir = Vector3.new()
     for key, vec in pairs(keyMap) do
         if UserInputService:IsKeyDown(key) then
@@ -253,16 +257,19 @@ RunService.RenderStepped:Connect(function(dt)
 
     if dir.Magnitude > 0 then
         dir = dir.Unit
-        local cam     = workspace.CurrentCamera
-        local camYaw  = CFrame.new(Vector3.zero, cam.CFrame.LookVector * Vector3.new(1, 0, 1))
+        local cam      = workspace.CurrentCamera
+        local camYaw   = CFrame.new(Vector3.zero, cam.CFrame.LookVector * Vector3.new(1, 0, 1))
         local worldDir = camYaw:VectorToWorldSpace(dir)
-        local newPos  = root.CFrame.Position + worldDir * SPEED * dt
-        root.CFrame   = CFrame.new(newPos, newPos + camYaw.LookVector)
+        local newPos   = clientCF.Position + worldDir * SPEED * dt
+        clientCF       = CFrame.new(newPos, newPos + camYaw.LookVector)
     end
 
     if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-        root.CFrame = root.CFrame + Vector3.new(0, SPEED * dt * 1.5, 0)
+        clientCF = clientCF + Vector3.new(0, SPEED * dt * 1.5, 0)
     end
+
+    -- Apply visual position right before render (after Stepped already set anchorCF).
+    root.CFrame = clientCF
 end)
 
 -- ── Character init (async — GUI is already up) ────────────────────────────────
