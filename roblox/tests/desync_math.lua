@@ -17,7 +17,7 @@ local function unit(a) local m = mag(a) return m > 0 and mul(a, 1/m) or V(0,0,0)
 
 local CONFIG = {
     MaxGap = 60, MaxTrackSpeed = 250, ResyncTolerance = 2,
-    SpeedFloorFactor = 1.0, MinSpeedFloor = 8,
+    SpeedFloorFactor = 1.0, MinSpeedFloor = 1,
     WalkSpeed = 16,   -- stands in for humanoid.WalkSpeed
     ShadowOffset = V(0, -5, 0),
 }
@@ -220,6 +220,18 @@ check(speedFloor() <= CONFIG.WalkSpeed + 1e-6,
 CONFIG.WalkSpeed = 0
 check(speedFloor() >= CONFIG.MinSpeedFloor,
     "zero WalkSpeed collapsed the floor below MinSpeedFloor")
+
+-- 12. The floor must stay under a heavily slowed but still legitimate speed.
+--     Measured from a real survival game: terrain multiplier for bedrock is
+--     0.35 and crouching divides by 3, so a base of 16 is legitimately
+--     1.87 studs/s. A floor above that is a speed leak in the slowest state,
+--     which is exactly where a speed check has the tightest bound.
+local slowest = 16 * 0.35 / 3
+CONFIG.WalkSpeed = slowest
+check(speedFloor() <= slowest + 1e-6,
+    string.format("floor %.2f exceeds crouched-on-bedrock speed %.2f",
+        speedFloor(), slowest))
+print(string.format("slowest legit speed %.2f, floor there %.2f", slowest, speedFloor()))
 CONFIG.WalkSpeed = 16
 
 print(fail == 0 and "ALL CHECKS PASSED" or (fail .. " CHECK(S) FAILED"))
