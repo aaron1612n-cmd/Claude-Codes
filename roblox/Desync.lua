@@ -1,36 +1,85 @@
 --[[
     Desync.lua — Universal Roblox Desync
 
-    You walk around completely normally. The humanoid is never touched, so
-    movement, animations, collision and the camera all stay native. The only
-    thing that changes is what the server receives.
+    You walk around normally. The humanoid is never modified, so movement,
+    animations, collision and the camera stay entirely native. Only what the
+    server receives is changed.
 
-    Mechanism
-    ---------
-    Frame order on the client:
+    The core invariant
+    ------------------
+    The position the server sees (`serverCF`) NEVER jumps. It is a simulated
+    point that chases a target at a capped speed, always. Every teleport
+    detector works the same way — magnitude(lastPos, newPos) / dt compared
+    against a plausible maximum — so a position that only ever moves at a
+    legitimate speed has nothing to flag, no matter how far it currently is
+    from where you actually are.
 
-        RenderStepped -> render -> Stepped -> physics -> Heartbeat -> replication flush
+    That single rule is what makes this usable in games that detect teleports.
+    It is also why switching it off no longer snaps: instead of handing the
+    server your real position in one frame, the script walks `serverCF` back
+    to you at running speed and only then stops.
 
-    Heartbeat is the last thing that runs before the engine transmits property
-    updates, and it is not part of the rendering pipeline. So:
+    Modes
+    -----
+    ANCHOR  serverCF is pinned where you switched on. Maximum desync, and the
+            gap grows without bound until MaxGap reins it in.
+    TRAIL   serverCF follows the path you actually walked, TrailLag seconds
+            behind. Every position the server sees is one you genuinely
+            occupied, in the order you occupied it — there is no artificial
+            movement to detect at all. Smaller gap, far quieter.
 
-        Heartbeat     : save the real CFrame, write the spoofed one
-                        -> the flush sends the spoofed position
-        RenderStepped : write the real CFrame back
-                        -> the frame draws at the real position
+    MaxGap is the leash. Games that snap you back are measuring the distance
+    between where they think you are and where you claim to be; keeping the
+    gap under that threshold is what stops the snap. Default 60 studs.
 
-    The character sits at the spoofed position only in the gap between the
-    replication flush and the next frame, which is neither rendered nor
-    simulated. Locally nothing changes; to the server and every other player
-    you are frozen where you switched it on.
+    Transports
+    ----------
+    native  Uses the executor's RakNet layer: physics packets are suppressed
+            and the spoofed position is pushed directly. No local CFrame
+            writes at all, so nothing client-side can observe the desync.
+            Requires both a packet-drop function and rnet.sendphysics.
+    swap    The portable fallback. Frame order on the client is
 
-    Toggle with the GUI button or [F].
+                RenderStepped -> render -> Stepped -> physics -> Heartbeat -> flush
+
+            Heartbeat is the last thing before the engine transmits and sits
+            outside the rendering pipeline, so the real CFrame is saved and
+            the spoofed one written at Heartbeat, then restored at
+            RenderStepped. The character occupies the spoofed position only
+            between the flush and the next frame, which is neither rendered
+            nor simulated.
+
+    Toggle with the GUI button or [F]. Everything works from the GUI alone —
+    no keyboard required.
 --]]
 
 local CONFIG = {
-    ToggleKey    = Enum.KeyCode.F,
-    Jitter       = false,  -- scatter the spoofed position instead of pinning it
-    JitterRadius = 12,     -- studs, when Jitter is on
+    ToggleKey = Enum.KeyCode.F,
+
+    Mode = "TRAIL",     -- "ANCHOR" or "TRAIL"
+
+    -- The leash. How far the server's view of you may lag behind reality.
+    -- Lower this until the game stops snapping you back.
+    MaxGap = 60,        -- studs
+
+    -- Floor on how fast serverCF may travel. The actual cap is the greater of
+    -- this and your own observed speed — see trackSpeed() for why.
+    MaxServerSpeed = 32, -- studs/s
+
+    -- Hard ceiling on the speed serverCF will ever match, so a one-frame
+    -- physics glitch or a game-scripted teleport can't unlock an arbitrarily
+    -- fast move.
+    MaxTrackSpeed = 250, -- studs/s
+
+    -- TRAIL mode: how far behind your real path the server trails you.
+    TrailLag = 1.5,     -- seconds
+
+    -- Speed used to walk serverCF back to you when switching off. Same cap
+    -- applies; this is only ever lower or equal.
+    ResyncSpeed = 32,   -- studs/s
+
+    -- Consider the resync finished once the gap is under this.
+    ResyncTolerance = 2, -- studs
 }
 
 -- ── Services ──────────────────────────────────────────────────────────────────
@@ -43,18 +92,129 @@ local StarterGui       = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
 
 -- ── State ─────────────────────────────────────────────────────────────────────
-local active   = false
-local anchorCF = CFrame.new()   -- where the server thinks you are
+local PHASE_OFF, PHASE_ON, PHASE_RESYNC = "off", "on", "resync"
+local phase = PHASE_OFF
 
--- The genuine client-side state, captured every Heartbeat before we overwrite
--- it and restored every RenderStepped. Never driven by us — the humanoid owns
--- it, we only borrow it for the length of a replication flush.
+local anchorCF = CFrame.new()   -- ANCHOR mode target
+local serverCF = CFrame.new()   -- what the server sees; never jumps
+local lastStep = os.clock()
+
+-- Low-passed measure of how fast you are genuinely moving. serverCF is allowed
+-- to match this, which is what lets the leash hold when you outrun the floor.
+local observedSpeed = 0
+local lastRealPos   = nil
+
+-- Genuine client state, borrowed only for the length of a replication flush
+-- under the swap transport.
 local realCF, realVel, realAngVel
 
 local heartbeatConn = nil
 local root, humanoid
 
 local RESTORE_BIND = "DesyncRestore"
+
+-- ── RakNet backend detection ──────────────────────────────────────────────────
+--
+-- Executors expose this under different names and shapes. Everything here is
+-- feature-detected and pcall-wrapped: if none of it exists the script falls
+-- back to the swap transport and behaves identically, just less quietly.
+--
+-- Known surfaces:
+--   raknet.desync(bool)              Velocity — physics-replication suppression
+--   raknet.block(id, bool)           Velocity — block outgoing packets by ID
+--   rnet.setfilter({bytes})          Celery — drop packets by leading byte
+--   rnet.sendphysics(CFrame)         Celery — push a position to the server
+--
+-- 0x85 is ID_PHYSICS, the physics replication opcode.
+
+local ID_PHYSICS = 0x85
+
+local function globalTable(name)
+    local ok, v = pcall(function()
+        if getgenv then
+            local g = getgenv()[name]
+            if g ~= nil then return g end
+        end
+        return getfenv(0)[name]
+    end)
+    if ok and (type(v) == "table" or type(v) == "userdata") then return v end
+    return nil
+end
+
+local function hasFn(t, name)
+    if not t then return false end
+    local ok, v = pcall(function() return t[name] end)
+    return ok and type(v) == "function"
+end
+
+local Net = { drop = nil, sendPhysics = nil, label = "swap" }
+
+local function detectBackend()
+    local rk = globalTable("raknet")
+    local rn = globalTable("rnet")
+
+    if hasFn(rk, "desync") then
+        Net.drop = function(on) pcall(function() rk.desync(on) end) end
+    elseif hasFn(rk, "block") then
+        Net.drop = function(on)
+            pcall(function()
+                if on then rk.block(ID_PHYSICS, true)
+                elseif hasFn(rk, "unblock") then rk.unblock(ID_PHYSICS)
+                else rk.block(ID_PHYSICS, false) end
+            end)
+        end
+    elseif hasFn(rn, "setfilter") then
+        Net.drop = function(on)
+            pcall(function() rn.setfilter(on and { ID_PHYSICS } or {}) end)
+        end
+    end
+
+    if hasFn(rn, "sendphysics") then
+        Net.sendPhysics = function(cf) pcall(function() rn.sendphysics(cf) end) end
+    end
+
+    -- Native needs both halves: suppressing the real packets is only useful
+    -- if something else is supplying a position, otherwise the server simply
+    -- freezes at the last thing it heard and the resync has nothing to drive.
+    Net.label = (Net.drop and Net.sendPhysics) and "native" or "swap"
+end
+
+detectBackend()
+
+-- ── Path history ──────────────────────────────────────────────────────────────
+-- TRAIL mode replays positions you genuinely occupied rather than inventing
+-- any, so there is no synthetic movement for a heuristic to catch.
+
+local trail = {}
+
+local function pushTrail(pos, now)
+    trail[#trail + 1] = { t = now, p = pos }
+    local cutoff = now - (CONFIG.TrailLag + 2)
+    local drop = 0
+    while trail[drop + 1] and trail[drop + 1].t < cutoff do
+        drop += 1
+    end
+    if drop > 0 then
+        table.move(trail, drop + 1, #trail, 1)
+        for i = #trail, #trail - drop + 1, -1 do trail[i] = nil end
+    end
+end
+
+-- Interpolated position from `age` seconds ago.
+local function trailPointAt(age, now)
+    if #trail == 0 then return nil end
+    local want = now - age
+    for i = #trail, 1, -1 do
+        if trail[i].t <= want then
+            local a, b = trail[i], trail[i + 1]
+            if not b then return a.p end
+            local span = b.t - a.t
+            if span <= 1e-6 then return a.p end
+            return a.p:Lerp(b.p, math.clamp((want - a.t) / span, 0, 1))
+        end
+    end
+    return trail[1].p
+end
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
 local sg = Instance.new("ScreenGui")
@@ -68,7 +228,7 @@ if not pcall(function() sg.Parent = game:GetService("CoreGui") end) then
 end
 
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.fromOffset(240, 158)
+frame.Size             = UDim2.fromOffset(248, 196)
 frame.Position         = UDim2.fromOffset(20, 20)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.BorderSizePixel  = 0
@@ -78,7 +238,6 @@ Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 local stroke = Instance.new("UIStroke", frame)
 stroke.Color, stroke.Thickness = Color3.fromRGB(60, 60, 75), 1
 
--- Title bar doubles as the drag handle.
 local titleBar = Instance.new("Frame")
 titleBar.Size             = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
@@ -104,63 +263,61 @@ titleLabel.TextXAlignment         = Enum.TextXAlignment.Left
 titleLabel.Text                   = "DESYNC"
 titleLabel.Parent                 = titleBar
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size                   = UDim2.new(1, -20, 0, 18)
-statusLabel.Position               = UDim2.fromOffset(10, 36)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Font                   = Enum.Font.Gotham
-statusLabel.TextSize               = 12
-statusLabel.TextColor3             = Color3.fromRGB(120, 120, 140)
-statusLabel.TextXAlignment         = Enum.TextXAlignment.Left
-statusLabel.Text                   = "Status: Inactive"
-statusLabel.Parent                 = frame
+local function mkLabel(y, size, colour)
+    local l = Instance.new("TextLabel")
+    l.Size                   = UDim2.new(1, -20, 0, 16)
+    l.Position               = UDim2.fromOffset(10, y)
+    l.BackgroundTransparency = 1
+    l.Font                   = Enum.Font.Gotham
+    l.TextSize               = size
+    l.TextColor3             = colour
+    l.TextXAlignment         = Enum.TextXAlignment.Left
+    l.Parent                 = frame
+    return l
+end
 
--- 44px tall: a real touch target, since this has to be usable on mobile.
-local btn = Instance.new("TextButton")
-btn.Size             = UDim2.new(1, -20, 0, 44)
-btn.Position         = UDim2.fromOffset(10, 58)
-btn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-btn.BorderSizePixel  = 0
-btn.Font             = Enum.Font.GothamBold
-btn.TextSize         = 14
-btn.TextColor3       = Color3.fromRGB(200, 200, 220)
-btn.Text             = "ENABLE"
-btn.AutoButtonColor  = false
-btn.Parent           = frame
-Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+local statusLabel = mkLabel(36, 12, Color3.fromRGB(120, 120, 140))
+statusLabel.Text = "Status: Inactive"
 
-local btnStroke = Instance.new("UIStroke", btn)
-btnStroke.Color, btnStroke.Thickness = Color3.fromRGB(60, 60, 75), 1
+local infoLabel = mkLabel(54, 11, Color3.fromRGB(95, 95, 115))
+infoLabel.Text = "gap 0 · " .. Net.label
 
-local jitterBtn = Instance.new("TextButton")
-jitterBtn.Size             = UDim2.new(1, -20, 0, 36)
-jitterBtn.Position         = UDim2.fromOffset(10, 110)
-jitterBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-jitterBtn.BorderSizePixel  = 0
-jitterBtn.Font             = Enum.Font.Gotham
-jitterBtn.TextSize         = 12
-jitterBtn.TextColor3       = Color3.fromRGB(150, 150, 170)
-jitterBtn.Text             = "Jitter: OFF"
-jitterBtn.AutoButtonColor  = false
-jitterBtn.Parent           = frame
-Instance.new("UICorner", jitterBtn).CornerRadius = UDim.new(0, 6)
+local function mkButton(y, h, text, size)
+    local b = Instance.new("TextButton")
+    b.Size             = UDim2.new(1, -20, 0, h)
+    b.Position         = UDim2.fromOffset(10, y)
+    b.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+    b.BorderSizePixel  = 0
+    b.Font             = Enum.Font.GothamBold
+    b.TextSize         = size
+    b.TextColor3       = Color3.fromRGB(200, 200, 220)
+    b.Text             = text
+    b.AutoButtonColor  = false
+    b.Parent           = frame
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    local s = Instance.new("UIStroke", b)
+    s.Color, s.Thickness = Color3.fromRGB(60, 60, 75), 1
+    return b, s
+end
 
-local jitterStroke = Instance.new("UIStroke", jitterBtn)
-jitterStroke.Color, jitterStroke.Thickness = Color3.fromRGB(50, 50, 62), 1
+-- 44px: a real touch target, since the GUI is the whole interface on mobile.
+local btn, btnStroke = mkButton(78, 44, "ENABLE", 14)
+local modeBtn, modeStroke = mkButton(130, 34, "Mode: TRAIL", 12)
+local gapBtn, gapStroke   = mkButton(170, 0, "", 12)
+gapBtn.Visible = false
+gapStroke.Thickness = 0
 
 local tweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad)
 
 btn.MouseEnter:Connect(function()
-    if active then return end
+    if phase ~= PHASE_OFF then return end
     TweenService:Create(btn, tweenInfo, { BackgroundColor3 = Color3.fromRGB(50, 50, 65) }):Play()
 end)
 btn.MouseLeave:Connect(function()
-    TweenService:Create(btn, tweenInfo, {
-        BackgroundColor3 = active and Color3.fromRGB(30, 90, 50) or Color3.fromRGB(35, 35, 45)
-    }):Play()
+    if phase ~= PHASE_OFF then return end
+    TweenService:Create(btn, tweenInfo, { BackgroundColor3 = Color3.fromRGB(35, 35, 45) }):Play()
 end)
 
--- Drag, mouse and touch alike.
 local dragging, dragStart, startPos = false, nil, nil
 
 titleBar.InputBegan:Connect(function(input)
@@ -189,12 +346,17 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
-local function updateUI(on)
-    if on then
+local function updateUI()
+    if phase == PHASE_ON then
         statusLabel.Text, statusLabel.TextColor3 = "Status: ACTIVE", Color3.fromRGB(80, 220, 100)
         btn.Text, btn.TextColor3 = "DISABLE", Color3.fromRGB(80, 220, 100)
         TweenService:Create(btn,       tweenInfo, { BackgroundColor3 = Color3.fromRGB(30, 90, 50) }):Play()
         TweenService:Create(btnStroke, tweenInfo, { Color = Color3.fromRGB(50, 160, 80) }):Play()
+    elseif phase == PHASE_RESYNC then
+        statusLabel.Text, statusLabel.TextColor3 = "Status: RESYNCING", Color3.fromRGB(230, 180, 90)
+        btn.Text, btn.TextColor3 = "CANCEL", Color3.fromRGB(230, 180, 90)
+        TweenService:Create(btn,       tweenInfo, { BackgroundColor3 = Color3.fromRGB(80, 60, 25) }):Play()
+        TweenService:Create(btnStroke, tweenInfo, { Color = Color3.fromRGB(160, 120, 60) }):Play()
     else
         statusLabel.Text, statusLabel.TextColor3 = "Status: Inactive", Color3.fromRGB(120, 120, 140)
         btn.Text, btn.TextColor3 = "ENABLE", Color3.fromRGB(200, 200, 220)
@@ -203,13 +365,15 @@ local function updateUI(on)
     end
 end
 
-local function updateJitterUI()
-    jitterBtn.Text = CONFIG.Jitter and "Jitter: ON" or "Jitter: OFF"
-    jitterBtn.TextColor3 = CONFIG.Jitter
-        and Color3.fromRGB(230, 180, 90)
-        or  Color3.fromRGB(150, 150, 170)
-    TweenService:Create(jitterStroke, tweenInfo, {
-        Color = CONFIG.Jitter and Color3.fromRGB(160, 120, 60) or Color3.fromRGB(50, 50, 62)
+local function updateModeUI()
+    modeBtn.Text = "Mode: " .. CONFIG.Mode
+    modeBtn.TextColor3 = CONFIG.Mode == "ANCHOR"
+        and Color3.fromRGB(230, 140, 140)
+        or  Color3.fromRGB(140, 190, 230)
+    TweenService:Create(modeStroke, tweenInfo, {
+        Color = CONFIG.Mode == "ANCHOR"
+            and Color3.fromRGB(140, 70, 70)
+            or  Color3.fromRGB(70, 110, 150)
     }):Play()
 end
 
@@ -219,30 +383,155 @@ local function alive()
     return root ~= nil and root.Parent ~= nil
 end
 
--- The position handed to the server. Pinned to the anchor, or scattered around
--- it when jitter is on — a moving target breaks hit registration harder than a
--- static one, at the cost of being obvious to anyone watching.
-local function spoofTarget()
-    if not CONFIG.Jitter then return anchorCF end
-    local r = CONFIG.JitterRadius
-    return anchorCF * CFrame.new(
-        (math.random() * 2 - 1) * r,
-        (math.random() * 2 - 1) * r,
-        (math.random() * 2 - 1) * r
+local function rotationOf(cf)
+    return cf - cf.Position
+end
+
+-- Where serverCF is trying to get to, before the leash is applied.
+local function modeTarget(realPos, now)
+    if CONFIG.Mode == "ANCHOR" then
+        return anchorCF.Position
+    end
+    return trailPointAt(CONFIG.TrailLag, now) or realPos
+end
+
+-- How fast serverCF is allowed to travel this frame.
+--
+-- A fixed cap is the wrong rule. Cap and leash are in direct conflict: if you
+-- move faster than the cap, serverCF cannot keep up and the gap grows without
+-- bound, which is exactly the distance a snap-back check measures.
+--
+-- The resolution is that a speed *you actually achieved* is legitimate by
+-- construction — the server watching you move at it has nothing to flag,
+-- because you really did move that fast. So the budget is the greater of the
+-- configured floor and your own smoothed speed, under a hard ceiling so a
+-- single glitched frame can't unlock an arbitrarily fast move.
+local function trackSpeed(headroom)
+    return math.clamp(
+        math.max(CONFIG.MaxServerSpeed, observedSpeed * headroom),
+        CONFIG.MaxServerSpeed,
+        CONFIG.MaxTrackSpeed
     )
 end
 
--- Restore the genuine state. Runs first thing every frame, and again on
--- disable, so the character is never left sitting at the spoofed position.
+-- Move serverCF toward `targetPos`, never faster than `maxSpeed`. This is the
+-- only place serverCF is ever written, which is what guarantees it cannot jump.
+local function chase(targetPos, maxSpeed, dt, rot)
+    local delta = targetPos - serverCF.Position
+    local dist  = delta.Magnitude
+    local step  = math.min(dist, maxSpeed * dt)
+    local pos   = dist > 1e-4 and (serverCF.Position + delta.Unit * step) or targetPos
+    serverCF = CFrame.new(pos) * rot
+    return dist - step
+end
+
+-- Push serverCF to the server for this frame.
+local function transmit()
+    if Net.label == "native" then
+        Net.sendPhysics(serverCF)
+        return
+    end
+    -- swap: the real state is saved and restored around the flush
+    realCF     = root.CFrame
+    realVel    = root.AssemblyLinearVelocity
+    realAngVel = root.AssemblyAngularVelocity
+
+    root.CFrame                  = serverCF
+    root.AssemblyLinearVelocity  = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+end
+
 local function restoreReal()
+    if Net.label == "native" then return end
     if not alive() or not realCF then return end
     root.CFrame                  = realCF
     root.AssemblyLinearVelocity  = realVel or Vector3.zero
     root.AssemblyAngularVelocity = realAngVel or Vector3.zero
 end
 
+local uiClock = 0
+
+local function onHeartbeat()
+    if phase == PHASE_OFF or not alive() then return end
+
+    local now = os.clock()
+    local dt  = math.min(now - lastStep, 0.25)
+    lastStep  = now
+
+    local realPos = root.CFrame.Position
+    local rot     = rotationOf(root.CFrame)
+    pushTrail(realPos, now)
+
+    -- Smoothed real speed. Low-passed so a single spiked frame doesn't grant
+    -- serverCF a large move, but responsive enough to track a sprint.
+    if lastRealPos then
+        -- Clamp the sample before it enters the filter, not just the result.
+        -- A game-scripted teleport is one frame of effectively infinite speed,
+        -- and without this it drags the average to the ceiling on its own.
+        local instant = math.min(
+            (realPos - lastRealPos).Magnitude / dt,
+            CONFIG.MaxTrackSpeed
+        )
+        observedSpeed += (instant - observedSpeed) * math.min(1, dt * 8)
+    end
+    lastRealPos = realPos
+
+    local targetPos, speed
+
+    if phase == PHASE_RESYNC then
+        -- Needs headroom over your current speed, otherwise a resync started
+        -- while you are still running never converges.
+        targetPos = realPos
+        speed     = math.max(CONFIG.ResyncSpeed, trackSpeed(1.15))
+    else
+        targetPos = modeTarget(realPos, now)
+        speed     = trackSpeed(1.05)
+
+        -- The leash. Pull the target to within MaxGap of where you actually
+        -- are, so the distance the game measures never crosses its threshold.
+        -- Applied to the target rather than to serverCF itself, so the move
+        -- toward it still goes through the speed cap.
+        local off = realPos - targetPos
+        if off.Magnitude > CONFIG.MaxGap then
+            targetPos = realPos - off.Unit * CONFIG.MaxGap
+        end
+    end
+
+    local remaining = chase(targetPos, speed, dt, rot)
+
+    if phase == PHASE_RESYNC and remaining <= CONFIG.ResyncTolerance then
+        -- Caught up. Stop touching anything.
+        phase = PHASE_OFF
+        restoreReal()
+        realCF, realVel, realAngVel = nil, nil, nil
+        if Net.drop then Net.drop(false) end
+        pcall(function() RunService:UnbindFromRenderStep(RESTORE_BIND) end)
+        if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+        updateUI()
+        infoLabel.Text = "gap 0 · " .. Net.label
+        return
+    end
+
+    transmit()
+
+    uiClock += dt
+    if uiClock >= 0.1 then
+        uiClock = 0
+        infoLabel.Text = string.format(
+            "gap %d · %s", (realPos - serverCF.Position).Magnitude, Net.label
+        )
+    end
+end
+
+local function startLoops()
+    if heartbeatConn then return end
+    lastStep = os.clock()
+    heartbeatConn = RunService.Heartbeat:Connect(onHeartbeat)
+    RunService:BindToRenderStep(RESTORE_BIND, Enum.RenderPriority.First.Value, restoreReal)
+end
+
 local function enable()
-    if active then return end
+    if phase == PHASE_ON then return end
 
     if not alive() or not humanoid then
         statusLabel.Text       = "Status: no character"
@@ -250,72 +539,74 @@ local function enable()
         return
     end
 
-    active   = true
+    -- Re-enabling mid-resync continues from where the server currently is
+    -- rather than re-anchoring, so there is still no discontinuity.
+    if phase == PHASE_OFF then
+        serverCF = root.CFrame
+        table.clear(trail)
+        observedSpeed, lastRealPos = 0, nil
+    end
+
     anchorCF = root.CFrame
-    realCF, realVel, realAngVel = nil, nil, nil
+    phase    = PHASE_ON
 
-    -- Last thing before the engine transmits: swap in the spoofed position.
-    -- Velocity is zeroed too, otherwise the server extrapolates the character
-    -- away from the anchor between packets and the freeze drifts.
-    heartbeatConn = RunService.Heartbeat:Connect(function()
-        if not active or not alive() then return end
+    if Net.drop then Net.drop(true) end
+    startLoops()
+    updateUI()
 
-        realCF     = root.CFrame
-        realVel    = root.AssemblyLinearVelocity
-        realAngVel = root.AssemblyAngularVelocity
-
-        root.CFrame                  = spoofTarget()
-        root.AssemblyLinearVelocity  = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end)
-
-    -- First thing next frame, before the camera reads the root and before
-    -- physics steps: put the real state back.
-    RunService:BindToRenderStep(RESTORE_BIND, Enum.RenderPriority.First.Value, restoreReal)
-
-    updateUI(true)
     pcall(function()
         StarterGui:SetCore("SendNotification", {
-            Title = "Desync", Text = "Active — server pinned to anchor", Duration = 2,
+            Title = "Desync", Text = CONFIG.Mode .. " · " .. Net.label, Duration = 2,
+        })
+    end)
+end
+
+-- Switching off does not hand the server your real position. It walks
+-- serverCF back to you at ResyncSpeed and only stops once it arrives, so the
+-- position history stays continuous and there is no teleport to detect.
+local function disable()
+    if phase ~= PHASE_ON then return end
+    phase = PHASE_RESYNC
+
+    -- Native suppression has to come off now: the resync needs the real
+    -- packets flowing again once serverCF converges, and sendphysics keeps
+    -- driving the position until then.
+    if Net.drop and Net.label ~= "native" then Net.drop(false) end
+
+    updateUI()
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Desync", Text = "Resyncing — walking the gap back", Duration = 2,
         })
     end)
 end
 
 local function teardown()
-    active = false
+    phase = PHASE_OFF
     pcall(function() RunService:UnbindFromRenderStep(RESTORE_BIND) end)
-    if heartbeatConn then
-        heartbeatConn:Disconnect()
-        heartbeatConn = nil
-    end
-end
-
-local function disable()
-    if not active then return end
-    teardown()
-
-    -- Disabling can land in the window between the Heartbeat swap and the next
-    -- frame's restore, so put the real state back explicitly rather than
-    -- stranding the character at the spoofed position.
-    restoreReal()
-    realCF, realVel, realAngVel = nil, nil, nil
-
-    updateUI(false)
-    pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = "Desync", Text = "Disabled — back in sync", Duration = 2,
-        })
-    end)
+    if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+    if Net.drop then Net.drop(false) end
 end
 
 local function toggle()
-    if active then disable() else enable() end
+    if phase == PHASE_ON then
+        disable()
+    elseif phase == PHASE_RESYNC then
+        -- Cancelling a resync snaps, which is the thing this exists to avoid.
+        -- Go back to desyncing instead; the gap simply reopens from here.
+        phase = PHASE_ON
+        if Net.drop then Net.drop(true) end
+        updateUI()
+    else
+        enable()
+    end
 end
 
 -- ── Character binding ─────────────────────────────────────────────────────────
 local function bindCharacter(c)
     root     = c:WaitForChild("HumanoidRootPart")
     humanoid = c:WaitForChild("Humanoid")
+    serverCF = root.CFrame
 end
 
 task.spawn(function()
@@ -323,24 +614,22 @@ task.spawn(function()
 end)
 
 lp.CharacterAdded:Connect(function(newChar)
-    -- Drop everything without touching the old, now-destroyed character, and
-    -- clear the refs before bindCharacter yields on WaitForChild.
     teardown()
     realCF, realVel, realAngVel = nil, nil, nil
     root, humanoid = nil, nil
-    updateUI(false)
-
+    table.clear(trail)
+    updateUI()
     bindCharacter(newChar)
 end)
 
 -- ── Input ─────────────────────────────────────────────────────────────────────
--- Activated rather than MouseButton1Click: it covers taps as well as clicks,
--- so the GUI is the whole interface on a device with no keyboard.
+-- Activated rather than MouseButton1Click: it covers taps as well as clicks.
 btn.Activated:Connect(toggle)
 
-jitterBtn.Activated:Connect(function()
-    CONFIG.Jitter = not CONFIG.Jitter
-    updateJitterUI()
+modeBtn.Activated:Connect(function()
+    CONFIG.Mode = CONFIG.Mode == "TRAIL" and "ANCHOR" or "TRAIL"
+    if phase == PHASE_ON then anchorCF = alive() and root.CFrame or anchorCF end
+    updateModeUI()
 end)
 
 UserInputService.InputBegan:Connect(function(input, gpe)
@@ -348,13 +637,19 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     if input.KeyCode == CONFIG.ToggleKey then toggle() end
 end)
 
-updateJitterUI()
+updateModeUI()
+updateUI()
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 return {
-    enable  = enable,
-    disable = disable,
-    toggle  = toggle,
-    active  = function() return active end,
-    setAnchor = function(cf) anchorCF = cf end,
+    enable   = enable,
+    disable  = disable,
+    toggle   = toggle,
+    phase    = function() return phase end,
+    gap      = function()
+        if not alive() then return 0 end
+        return (root.CFrame.Position - serverCF.Position).Magnitude
+    end,
+    backend  = function() return Net.label end,
+    config   = CONFIG,
 }
