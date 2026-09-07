@@ -73,6 +73,7 @@
     background: rgba(0, 0, 0, .5);
     border: 2px solid rgba(255, 255, 255, .25);
     cursor: pointer;
+    touch-action: none;
   }
   #menuBtn.hide { display: none; }
 
@@ -167,6 +168,7 @@
     background: rgba(255, 255, 255, .05);
     border: 2px solid #2b3346;
     cursor: pointer;
+    touch-action: none;
     transition: color .1s, border-color .1s, background .1s;
   }
   #act.ready {
@@ -205,7 +207,8 @@
     <p>WALK THE DARK. TAKE THE MARKS.<br>LEAVE BY THE GREEN DOOR.</p>
     <div id="missions"></div>
     <p class="fine">DRAG ANYWHERE TO MOVE &middot; NUDGE = SNEAK &middot; PUSH = RUN<br>
-       STRIKE ONLY FROM BEHIND &middot; RUNNING IS LOUD</p>
+       STRIKE ONLY FROM BEHIND &middot; RUNNING IS LOUD<br>
+       TAP WITH A SECOND FINGER TO STRIKE</p>
   </div>
 
   <!-- Briefing -->
@@ -993,7 +996,10 @@
     if (mode !== "play") return;
     e.preventDefault();
     const [x, y] = toCanvas(e);
-    if (stick.on) return;
+    // The stick is already someone's thumb. A second finger anywhere on the
+    // field is a strike — reaching the button means letting go of the stick,
+    // and letting go means standing still.
+    if (stick.on) { if (e.pointerId !== stick.id) input.act = true; return; }
     stick.on = true; stick.id = e.pointerId;
     stick.ox = x; stick.oy = y; stick.x = x; stick.y = y;
     stick.r = Math.min(canvas.width, canvas.height) * 0.14;
