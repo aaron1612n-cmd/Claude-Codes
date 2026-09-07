@@ -4,12 +4,21 @@
     Works in any executor that exposes the standard Roblox globals.
 
     Toggle: [F] keybind or GUI button
-    The anchor position is locked when desync activates.
-    Your client walks freely; server sees you frozen at the anchor.
+    WASD to move, Space to ascend, LeftControl to descend.
+
+    The anchor position is locked when desync activates. Your client flies
+    freely; the server keeps receiving the anchor. Turning it off drops you
+    where you actually walked.
 --]]
 
 local CONFIG = {
-    ToggleKey = Enum.KeyCode.F,
+    ToggleKey  = Enum.KeyCode.F,
+    AscendKey  = Enum.KeyCode.Space,
+    DescendKey = Enum.KeyCode.LeftControl,
+    Speed      = 50,    -- studs/s while desynced
+    -- true  = turning desync off drops you where you walked (apparent teleport)
+    -- false = you snap back to the anchor the server saw the whole time
+    TeleportOnDisable = true,
 }
 
 -- ── Services ──────────────────────────────────────────────────────────────────
@@ -182,23 +191,120 @@ local function updateUI(on)
 end
 
 -- ── Core ──────────────────────────────────────────────────────────────────────
-local function freezeHumanoid(freeze)
-    if not humanoid then return end
-    humanoid.WalkSpeed = freeze and 0 or 16
-    humanoid.JumpPower = freeze and 0 or 50
+--
+-- Frame order in Roblox, and where each write has to land:
+--
+--   1. BindToRenderStep / RenderStepped   <- write clientCF here (what you SEE)
+--   2. render
+--   3. Stepped            (pre-physics)
+--   4. physics simulation
+--   5. Heartbeat          (post-physics)  <- write anchorCF here (what SERVER sees)
+--   6. replication flush
+--
+-- The replicator sends whatever state the part holds when the flush runs, so
+-- the anchorCF write must be the LAST one of the frame — that means Heartbeat,
+-- not Stepped. The visual write must land before the camera module samples the
+-- root, which is why it's a BindToRenderStep at Camera-1 rather than a plain
+-- RenderStepped connection (connection order against the camera is otherwise
+-- undefined).
+--
+-- The root is also anchored while active. Without that, gravity keeps
+-- accumulating velocity on an assembly we teleport every step: the humanoid
+-- drops into Freefall and the camera lerps toward a subject being yanked
+-- between two positions every frame.
+
+local RENDER_BIND    = "DesyncVisual"
+local RENDER_PRIORITY = Enum.RenderPriority.Camera.Value - 1
+
+local savedAnchored, savedWalkSpeed, savedJumpPower
+
+local keyMap = {
+    [Enum.KeyCode.W] = Vector3.new( 0, 0, -1),
+    [Enum.KeyCode.S] = Vector3.new( 0, 0,  1),
+    [Enum.KeyCode.A] = Vector3.new(-1, 0,  0),
+    [Enum.KeyCode.D] = Vector3.new( 1, 0,  0),
+}
+
+local function killVelocity()
+    if not root then return end
+    root.AssemblyLinearVelocity  = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+end
+
+-- Advance clientCF from input, then place the root there for this frame's render.
+local function stepVisual(dt)
+    if not active or not root then return end
+
+    local dir = Vector3.zero
+    for key, vec in pairs(keyMap) do
+        if UserInputService:IsKeyDown(key) then
+            dir += vec
+        end
+    end
+
+    -- Flatten the camera look onto the XZ plane. Looking straight up or down
+    -- flattens to a zero vector, which would make .Unit NaN and corrupt the
+    -- CFrame permanently — fall back to the character's current facing.
+    local cam  = workspace.CurrentCamera
+    local flat = cam.CFrame.LookVector * Vector3.new(1, 0, 1)
+    if flat.Magnitude < 1e-4 then
+        flat = clientCF.LookVector * Vector3.new(1, 0, 1)
+        if flat.Magnitude < 1e-4 then
+            flat = Vector3.new(0, 0, -1)
+        end
+    end
+    local camYaw = CFrame.lookAt(Vector3.zero, flat.Unit)
+
+    if dir.Magnitude > 0 then
+        local worldDir = camYaw:VectorToWorldSpace(dir.Unit)
+        local newPos   = clientCF.Position + worldDir * CONFIG.Speed * dt
+        clientCF = CFrame.lookAt(newPos, newPos + camYaw.LookVector)
+    end
+
+    if UserInputService:IsKeyDown(CONFIG.AscendKey) then
+        clientCF = clientCF + Vector3.new(0,  CONFIG.Speed * dt, 0)
+    end
+    if UserInputService:IsKeyDown(CONFIG.DescendKey) then
+        clientCF = clientCF + Vector3.new(0, -CONFIG.Speed * dt, 0)
+    end
+
+    root.CFrame = clientCF
 end
 
 local function enable()
-    if active or not root then return end
+    if active then return end
+
+    -- Never fail silently: a missing character is the difference between
+    -- "the button is broken" and "wait a second for the character to load".
+    if not root or not root.Parent or not humanoid then
+        statusLabel.Text       = "Status: no character"
+        statusLabel.TextColor3 = Color3.fromRGB(220, 160, 60)
+        return
+    end
+
     active   = true
     anchorCF = root.CFrame
-    clientCF = root.CFrame  -- start client visual at same spot
+    clientCF = root.CFrame
 
-    freezeHumanoid(true)
+    -- Freeze the assembly: no gravity, no accumulated velocity, no humanoid
+    -- state machine fighting our writes.
+    savedAnchored  = root.Anchored
+    savedWalkSpeed = humanoid.WalkSpeed
+    savedJumpPower = humanoid.JumpPower
 
-    heartbeatConn = RunService.Stepped:Connect(function()
-        if not active then return end
+    root.Anchored      = true
+    humanoid.WalkSpeed = 0
+    humanoid.JumpPower = 0
+    killVelocity()
+
+    -- Visual position, written just before the camera reads the root.
+    RunService:BindToRenderStep(RENDER_BIND, RENDER_PRIORITY, stepVisual)
+
+    -- Replicated position, written last in the frame so the flush sends it.
+    heartbeatConn = RunService.Heartbeat:Connect(function()
+        if not active or not root then return end
         root.CFrame = anchorCF
+        killVelocity()
     end)
 
     updateUI(true)
@@ -214,12 +320,25 @@ local function disable()
     if not active then return end
     active = false
 
+    pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)
+
     if heartbeatConn then
         heartbeatConn:Disconnect()
         heartbeatConn = nil
     end
 
-    freezeHumanoid(false)
+    if root then
+        -- Land where you walked, or snap back to the anchor.
+        root.CFrame  = CONFIG.TeleportOnDisable and clientCF or anchorCF
+        root.Anchored = savedAnchored or false
+        killVelocity()
+    end
+
+    if humanoid then
+        humanoid.WalkSpeed = savedWalkSpeed or 16
+        humanoid.JumpPower = savedJumpPower or 50
+    end
+
     updateUI(false)
 
     pcall(function()
@@ -233,45 +352,6 @@ local function toggle()
     if active then disable() else enable() end
 end
 
--- ── Movement while desynced ───────────────────────────────────────────────────
-local SPEED  = 16
-
-local keyMap = {
-    [Enum.KeyCode.W] = Vector3.new( 0, 0, -1),
-    [Enum.KeyCode.S] = Vector3.new( 0, 0,  1),
-    [Enum.KeyCode.A] = Vector3.new(-1, 0,  0),
-    [Enum.KeyCode.D] = Vector3.new( 1, 0,  0),
-}
-
-RunService.RenderStepped:Connect(function(dt)
-    if not active or not root then return end
-
-    -- Accumulate movement into clientCF (not root.CFrame, which Stepped
-    -- resets to anchorCF every tick for replication).
-    local dir = Vector3.new()
-    for key, vec in pairs(keyMap) do
-        if UserInputService:IsKeyDown(key) then
-            dir = dir + vec
-        end
-    end
-
-    if dir.Magnitude > 0 then
-        dir = dir.Unit
-        local cam      = workspace.CurrentCamera
-        local camYaw   = CFrame.new(Vector3.zero, cam.CFrame.LookVector * Vector3.new(1, 0, 1))
-        local worldDir = camYaw:VectorToWorldSpace(dir)
-        local newPos   = clientCF.Position + worldDir * SPEED * dt
-        clientCF       = CFrame.new(newPos, newPos + camYaw.LookVector)
-    end
-
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-        clientCF = clientCF + Vector3.new(0, SPEED * dt * 1.5, 0)
-    end
-
-    -- Apply visual position right before render (after Stepped already set anchorCF).
-    root.CFrame = clientCF
-end)
-
 -- ── Character init (async — GUI is already up) ────────────────────────────────
 local function bindCharacter(c)
     char     = c
@@ -284,7 +364,20 @@ task.spawn(function()
 end)
 
 lp.CharacterAdded:Connect(function(newChar)
-    disable()
+    -- Drop state without touching the old (now destroyed) character.
+    active = false
+    pcall(function() RunService:UnbindFromRenderStep(RENDER_BIND) end)
+    if heartbeatConn then
+        heartbeatConn:Disconnect()
+        heartbeatConn = nil
+    end
+    savedAnchored, savedWalkSpeed, savedJumpPower = nil, nil, nil
+
+    -- bindCharacter yields on WaitForChild; clear the stale refs first so
+    -- nothing touches the destroyed character during that window.
+    root, humanoid = nil, nil
+    updateUI(false)
+
     bindCharacter(newChar)
 end)
 
