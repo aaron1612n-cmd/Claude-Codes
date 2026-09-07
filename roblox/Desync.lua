@@ -52,12 +52,18 @@
 
                 RenderStepped -> render -> Stepped -> physics -> Heartbeat -> flush
 
-            Heartbeat is the last thing before the engine transmits and sits
-            outside the rendering pipeline, so the real CFrame is saved and
-            the spoofed one written at Heartbeat, then restored at
-            RenderStepped. The character occupies the spoofed position only
-            between the flush and the next frame, which is neither rendered
-            nor simulated.
+            Heartbeat is the last thing before the engine transmits, so the
+            real CFrame is saved and the spoofed one written there. It is then
+            restored TWICE: at Stepped, which fires immediately before the
+            physics step, and at RenderStepped, before the frame draws.
+
+            Both restores are load-bearing. Physics is not locked to the
+            render frame, and at 30fps the gap between the Heartbeat write and
+            the next RenderStepped is a full 33ms of simulation — long enough
+            for the engine to solve the character out of whatever the spoofed
+            position is intersecting, which shows up as shaking. Restoring at
+            Stepped is what guarantees physics only ever integrates from the
+            real state.
 
     Toggle with the GUI button or [F]. Everything works from the GUI alone —
     no keyboard required.
@@ -76,7 +82,14 @@ local CONFIG = {
     -- own attacks and interactions still land. That is the trade the other two
     -- modes cannot make: any gap large enough to protect you from incoming
     -- damage breaks your outgoing reach by exactly the same distance.
-    ShadowOffset = Vector3.new(0, -5, 0),
+    --
+    -- Horizontal, not vertical. A downward offset reads well on paper — it
+    -- displaces you without changing horizontal distance to anything — but it
+    -- puts the server-side root under the floor, and a game that notices you
+    -- are inside terrain corrects it by ejecting you upward. A sideways offset
+    -- keeps your ground height exactly right and costs only a few studs of
+    -- range against a reach budget measured in tens.
+    ShadowOffset = Vector3.new(4, 0, 0),
 
     -- The leash. How far the server's view of you may lag behind reality.
     -- Lower this until the game stops snapping you back.
@@ -150,6 +163,7 @@ local instantSpeed = 0
 local realCF, realVel, realAngVel
 
 local heartbeatConn = nil
+local steppedConn   = nil
 local root, humanoid
 
 local RESTORE_BIND = "DesyncRestore"
@@ -501,6 +515,20 @@ local function transmit()
     root.AssemblyAngularVelocity = Vector3.zero
 end
 
+-- Put the genuine state back. Called from two places, and it needs both.
+--
+-- Physics is NOT locked to the render frame. The window between the Heartbeat
+-- write and the next RenderStepped is one whole frame long — 33ms at the 30fps
+-- a phone or tablet actually runs at — and the engine steps physics inside it.
+-- With only the RenderStepped restore the character genuinely spends that time
+-- at the spoofed position: SHADOW's downward offset puts the root under the
+-- floor, the solver ejects the penetrating assembly, the humanoid flips to
+-- Freefall, and the character shakes in the air.
+--
+-- Stepped fires immediately before the physics step, so restoring there is
+-- what actually guarantees physics only ever integrates from the real state,
+-- at any frame rate. The RenderStepped restore stays because it is what
+-- guarantees the camera and the frame draw from the real state.
 local function restoreReal()
     if Net.label == "native" then return end
     if not alive() or not realCF then return end
@@ -577,6 +605,7 @@ local function onHeartbeat()
         if Net.drop then Net.drop(false) end
         pcall(function() RunService:UnbindFromRenderStep(RESTORE_BIND) end)
         if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+        if steppedConn then steppedConn:Disconnect(); steppedConn = nil end
         updateUI()
         infoLabel.Text = "gap 0 · " .. Net.label
         return
@@ -597,6 +626,10 @@ local function startLoops()
     if heartbeatConn then return end
     lastStep = os.clock()
     heartbeatConn = RunService.Heartbeat:Connect(onHeartbeat)
+    -- Pre-physics restore. This is the one that stops the character being
+    -- simulated at the spoofed position on a low frame rate.
+    steppedConn = RunService.Stepped:Connect(restoreReal)
+    -- Pre-render restore, so the camera and the frame draw from the real state.
     RunService:BindToRenderStep(RESTORE_BIND, Enum.RenderPriority.First.Value, restoreReal)
 end
 
@@ -655,6 +688,7 @@ local function teardown()
     phase = PHASE_OFF
     pcall(function() RunService:UnbindFromRenderStep(RESTORE_BIND) end)
     if heartbeatConn then heartbeatConn:Disconnect(); heartbeatConn = nil end
+    if steppedConn then steppedConn:Disconnect(); steppedConn = nil end
     if Net.drop then Net.drop(false) end
 end
 
