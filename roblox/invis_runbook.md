@@ -6,8 +6,8 @@ Continuation state for the Delta invisibility script. Keep under ~1.5k tokens; t
 
 - Script: `roblox/invis_delta.lua` on `ClaudeMain`, repo `aaron1612n-cmd/Claude-Codes`
 - Load: `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/Claude-Codes/ClaudeMain/roblox/invis_delta.lua"))()`
-- Dev branch: `claude/wonderful-goldberg-wojkkh`. Merged so far: PRs #19–#25.
-- Working rule: **Claude merges its own PRs** (draft → ready → merge). Don't leave them hanging.
+- Dev branch: `claude/wonderful-goldberg-wojkkh`. Merged so far: PRs #19–#26.
+- **Working rule: always merge when ready, no confirmation needed.** draft → ready → merge, standing policy, not a per-PR ask. Don't leave PRs hanging.
 
 ## The replication model (hard-won — don't re-derive)
 
@@ -25,16 +25,16 @@ Everything else is server-reconstructed. **Disproven by live testing, do not ret
 | `Motor6D.Transform` collapse | Same channel as above. Killed by the same evidence. |
 | `SimulationRadius` = 0 | Roblox moved ownership server-side years ago. Expected inert; kept as its own `(legacy)` toggle to confirm. |
 
-Also: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D **kills you instantly**. And anything below `workspace.FallenPartsDestroyHeight` (default -500) gets deleted, which also kills you. And a Heartbeat CFrame write that lands the HRP in terrain (M4/Under Map) is a physical move, not a free lie — the physics step before the next RenderStepped resolves the collision and leaves the HRP with real velocity; restoring only CFrame at RenderStepped lets that velocity survive and bleed downward every frame. Fix: `parkUp` must restore `AssemblyLinearVelocity`/`AssemblyAngularVelocity` too, not just CFrame.
+Also: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D **kills you instantly**. And anything below `workspace.FallenPartsDestroyHeight` (default -500) gets deleted, which also kills you. And a Heartbeat CFrame write that lands the HRP in terrain (M4/Under Map) is a physical move, not a free lie — the physics step before the next RenderStepped resolves the collision and leaves the HRP with real velocity; restoring only CFrame at RenderStepped lets that velocity survive and bleed downward every frame. **Fixed in #26:** `parkUp`/`parkStop` now restore `AssemblyLinearVelocity`/`AssemblyAngularVelocity` too, not just CFrame.
 
 ## Current design — root parking
 
 Frame order: `RenderStepped → render → Stepped → physics → Heartbeat → replicate`
 
 - **Heartbeat** (last before snapshot) → write fake root position — this is what others get
-- **RenderStepped** (before next physics) → write true root position — physics/camera/animation stay normal
+- **RenderStepped** (before next physics) → write true root position + true velocity — physics/camera/animation stay normal
 
-True position is captured at Heartbeat (post-physics), because by RenderStepped the root still holds the previous frame's fake value. No joints touched, so no freeze and no death.
+True position/velocity captured at Heartbeat (post-physics), because by RenderStepped the root still holds the previous frame's fake value. No joints touched, so no freeze.
 
 Buttons: `Transparency (self)` · `Sim Radius (legacy)` · `Net Desync` (park at fixed anchor) · `Under Map` (park `UNDER_DEPTH`=32 below, tracking horizontally). M3/M4 mutually exclusive. `R` = resync, suspends the lie ~6 frames.
 
@@ -44,11 +44,9 @@ Buttons: `Transparency (self)` · `Sim Radius (legacy)` · `Net Desync` (park at
 
 If the server thinks you're elsewhere, server-validated hits resolve from elsewhere. Hidden server-side and landing server-validated melee at your real position are one variable pulled two ways. `R` is the escape hatch. Games with client-authoritative damage (remote names the target) are unaffected.
 
-## Status: UNVERIFIED — alt test aborted, bug found and fixed
+## Status: UNVERIFIED — death-spiral bug fixed and merged (#26), retest still pending
 
-First alt-account pass on Under Map didn't reach the two open questions below — toggling M4 shoved him and the camera down repeatedly until he died. Diagnosed: `parkDown` (Heartbeat) writes the HRP underground, which is a real physical move — the physics step before the next RenderStepped generates a collision-response velocity as the body resolves out of terrain. `parkUp` restored only `hrp.CFrame`, not velocity, so that downward velocity survived the restore and accumulated frame over frame until fall damage or `FallenPartsDestroyHeight` killed the character.
-
-**Fixed**, not yet retested: `parkDown` now also snapshots `AssemblyLinearVelocity`/`AssemblyAngularVelocity` alongside the CFrame; `parkUp`, `parkStop` restore both. Net Desync (M3, anchor in open space) likely never hit this — the anchor point isn't inside geometry — but wasn't tested standalone before the fix either.
+First alt-account pass on Under Map didn't reach the open questions below — toggling M4 shoved him and the camera down repeatedly until he died. Diagnosed and fixed: `parkDown`/`parkUp`/`parkStop` now snapshot and restore `AssemblyLinearVelocity`/`AssemblyAngularVelocity` alongside the CFrame, not position alone — see replication-model section above for why that was killing him. Merged to `ClaudeMain`. Net Desync (M3, anchor in open space) likely never hit this bug — the anchor point isn't inside geometry — but wasn't tested standalone before the fix either.
 
 Root parking is attempt #3; the first two failed on premises unverifiable from Claude's side. **No claim about what other players see has been confirmed — retest is still pending.** Open questions, in order:
 
