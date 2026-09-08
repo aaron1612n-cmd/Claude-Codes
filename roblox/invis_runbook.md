@@ -6,55 +6,53 @@ Continuation state for the Delta invisibility script. Keep under ~1.5k tokens; t
 
 - Script: `roblox/invis_delta.lua` on `ClaudeMain`, repo `aaron1612n-cmd/Claude-Codes`
 - Load: `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/Claude-Codes/ClaudeMain/roblox/invis_delta.lua"))()`
-- Dev branch: `claude/wonderful-goldberg-wojkkh`. Merged so far: PRs #19–#27.
+- Dev branch: `claude/wonderful-goldberg-wojkkh`. Merged so far: PRs #19–#26.
 - **Working rule: always merge when ready, no confirmation needed.** draft → ready → merge, standing policy, not a per-PR ask. Don't leave PRs hanging.
 
 ## The replication model (hard-won — don't re-derive)
 
-A client pushes exactly this to the server: **root assembly CFrame** (the only useful lever), Humanoid state, and which animations play. Everything else is server-reconstructed.
+A Roblox client can push exactly this to the server:
 
-**Disproven by live testing, do not retry:**
+- **Root assembly CFrame** (HumanoidRootPart) ← the only useful lever
+- Humanoid state, and which animations play
+
+Everything else is server-reconstructed. **Disproven by live testing, do not retry:**
 
 | Attempt | Result |
 |---|---|
-| `Transparency` / `LocalTransparencyModifier` | Replicates server→client only. Self-cloak by design. **Removed.** |
-| `Motor6D.Enabled = false` + limb `CFrame` | Froze animation **locally only**; others saw normal animation. Structural writes don't replicate. |
-| `Motor6D.Transform` collapse | Same channel. Same evidence kills it. |
-| `SimulationRadius` = 0 | Ownership went server-side years ago. Inert. **Removed.** |
+| `Transparency` / `LocalTransparencyModifier` | Property changes replicate server→client only. Self-cloak only, by design. |
+| `Motor6D.Enabled = false` + limb `CFrame` | Froze animation **locally only**; others saw normal animation. Structural changes don't replicate, so server's rig stayed intact and overwrote limb writes. |
+| `Motor6D.Transform` collapse | Same channel as above. Killed by the same evidence. |
+| `SimulationRadius` = 0 | Roblox moved ownership server-side years ago. Expected inert; kept as its own `(legacy)` toggle to confirm. |
 
-Kill-you gotchas: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D is instant death. Anything below `workspace.FallenPartsDestroyHeight` (default -500) gets deleted. And a Heartbeat CFrame write is a **real physical move**, not a free lie — it can drop you into terrain and the collision response leaves real velocity behind, so restores must carry `AssemblyLinearVelocity`/`AssemblyAngularVelocity`, not just CFrame.
+Also: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D **kills you instantly**. And anything below `workspace.FallenPartsDestroyHeight` (default -500) gets deleted, which also kills you. And a Heartbeat CFrame write that lands the HRP in terrain (M4/Under Map) is a physical move, not a free lie — the physics step before the next RenderStepped resolves the collision and leaves the HRP with real velocity; restoring only CFrame at RenderStepped lets that velocity survive and bleed downward every frame. **Fixed in #26:** `parkUp`/`parkStop` now restore `AssemblyLinearVelocity`/`AssemblyAngularVelocity` too, not just CFrame.
 
 ## Current design — root parking
 
 Frame order: `RenderStepped → render → Stepped → physics → Heartbeat → replicate`
 
-- **RenderStepped @ `RenderPriority.First` (0)** → restore true position
-- **Stepped** (pre-physics) → restore true position
-- **Heartbeat** (pre-snapshot) → capture truth, write the lie
+- **Heartbeat** (last before snapshot) → write fake root position — this is what others get
+- **RenderStepped** (before next physics) → write true root position + true velocity — physics/camera/animation stay normal
 
-Root holds the lie only between Heartbeat and the next restore — exactly the replication window.
+True position/velocity captured at Heartbeat (post-physics), because by RenderStepped the root still holds the previous frame's fake value. No joints touched, so no freeze.
 
-**Three bugs found in the field, all fixed — do not reintroduce:**
+Buttons: `Transparency (self)` · `Sim Radius (legacy)` · `Net Desync` (park at fixed anchor) · `Under Map` (park `UNDER_DEPTH`=32 below, tracking horizontally). M3/M4 mutually exclusive. `R` = resync, suspends the lie ~6 frames.
 
-1. **Restore must beat `RenderPriority.Camera` (200).** Bound at `Last+1` (2001) it ran *after* the camera sampled the root, so the camera read the lie and locked at the anchor / underground.
-2. **`Stepped` restore is not redundant.** Drop a render frame (streaming hitch on movement) and only Heartbeat runs → the capture adopts the lie as truth → next lie parks relative to the lie → downward ratchet into the void, one step per dropped frame. `Stepped` fires with physics regardless of rendering; `RESTORE_EPSILON` (0.5st) rejects a sample still sitting on the last lie as backstop.
-3. **Roblox ships a root update only when the CFrame CHANGES.** Identical value every frame = no delta = no packet, so standing perfectly still replicated nothing and resync silently did nothing until he walked. Hold window alternates a ±0.02st nudge to force a real delta.
-
-Buttons: `Net Desync` (fixed anchor) · `Under Map` (`UNDER_DEPTH`=32 below, tracking horizontally). Mutually exclusive. `R` = **hold** to resync (tap leaves a 15-frame tail).
+**Don't run Transparency with Under Map** — it hides the body Under Map exists to let you keep seeing.
 
 ## The trade that can't be engineered away
 
-If the server thinks you're elsewhere, server-validated hits resolve from elsewhere. Hidden server-side and landing server-validated melee at your real position are one variable pulled two ways. Hold `R` is the escape hatch. Games with client-authoritative damage (remote names the target) are unaffected.
+If the server thinks you're elsewhere, server-validated hits resolve from elsewhere. Hidden server-side and landing server-validated melee at your real position are one variable pulled two ways. `R` is the escape hatch. Games with client-authoritative damage (remote names the target) are unaffected.
 
-## Status
+## Status: UNVERIFIED — death-spiral bug fixed and merged (#26), retest still pending
 
-**CONFIRMED: Net Desync works.** Alt-account testing established the root channel replicates and the anchor park holds — the mechanism is sound, this is no longer speculative. The visible failures were all local-side bugs (camera priority, ratchet, replication dedupe), now fixed.
+First alt-account pass on Under Map didn't reach the open questions below — toggling M4 shoved him and the camera down repeatedly until he died. Diagnosed and fixed: `parkDown`/`parkUp`/`parkStop` now snapshot and restore `AssemblyLinearVelocity`/`AssemblyAngularVelocity` alongside the CFrame, not position alone — see replication-model section above for why that was killing him. Merged to `ClaudeMain`. Net Desync (M3, anchor in open space) likely never hit this bug — the anchor point isn't inside geometry — but wasn't tested standalone before the fix either.
 
-Open questions:
+Root parking is attempt #3; the first two failed on premises unverifiable from Claude's side. **No claim about what other players see has been confirmed — retest is still pending.** Open questions, in order:
 
-1. Does Under Map hold now — body and camera staying at the surface while moving?
-2. With the jitter fix, does holding `R` visibly resync on the alt's screen while standing still?
-3. Does damage land **without** `R`? Yes → client-authoritative, no tradeoff. Only with `R` → server-validated, `R` is the tax.
+0. Does M4 now survive without the death spiral? (retest the fix first, before anything below)
+1. Does the alt see you **vanish / stand still** (root write replicated → mechanism works) or **walking normally** (Heartbeat write not sampled → mechanism dead, stop guessing at frame timing, try the remote/game-specific angle instead)?
+2. Does damage land **without** tapping `R`? Yes → client-authoritative, no tradeoff. Only with `R` → server-validated, `R` is the tax.
 
 ## Lesson
 
