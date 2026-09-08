@@ -1,13 +1,22 @@
 --=====================================================================
 -- roblox/invis_delta.lua
--- Delta executor — three independent invisibility methods, GUI toggles.
+-- Delta executor — four independent invisibility methods, GUI toggles.
 --
---   1. LTM Loop      render-step LocalTransparencyModifier enforcement
---   2. Meta Hook     __index / __newindex intercept (resets die, checks lie)
---   3. Net Desync    simulation-radius ownership drop + burst resync
+--   1. Transparency  direct Transparency + LTM writes          [LOCAL ONLY]
+--   2. Joint Crush   Motor6D.Transform collapse                [animation net]
+--   3. Net Desync    simulation-radius ownership drop          [physics net]
+--   4. Under Map     rig break + phase-split CFrame drop       [physics net]
 --
--- HumanoidRootPart is never hidden, moved, or unparented by methods 1-2,
--- so the server-side hitbox and tool attacks stay valid.
+-- What crosses to the server from a client is narrow: physics (CFrame /
+-- velocity) on assemblies the client owns, and the animation channel
+-- (Motor6D.Transform). Plain property writes — Transparency, Color, Size,
+-- Decal.Transparency — never replicate. M1 is therefore self-cloaking
+-- only, and is labelled as such. M2/M3/M4 ride the two channels that do
+-- replicate, so other players are affected.
+--
+-- M4 is the one to reach for: HumanoidRootPart is never moved, so the
+-- server-side hitbox, tool origin and movement all stay at your real
+-- position while the visible body sits under the map.
 --=====================================================================
 
 local CONFIG = {
@@ -15,7 +24,9 @@ local CONFIG = {
     RESYNC_KEY    = Enum.KeyCode.R,   -- M3: burst-resync so a swing lands where you stand
     RESYNC_FRAMES = 6,                -- how many frames ownership is handed back
     EFFECT_PERIOD = 0.5,              -- seconds between effect re-assert passes
-    HIDE_NAMETAG  = true,             -- M1 also kills the humanoid name/health display
+    HIDE_NAMETAG  = true,             -- M1/M4 also kill the humanoid name/health display
+    UNDER_DEPTH   = 512,              -- M4: studs below the root the body is parked at
+    KEEP_TOOL_UP  = true,             -- M4: leave equipped tool parts at the real position
 }
 
 local Players    = game:GetService("Players")
@@ -26,41 +37,12 @@ local lp         = Players.LocalPlayer
 -- ── executor env (undefined globals resolve to nil, never throw) ──────────────
 
 local gethui            = gethui
-local hookmetamethod    = hookmetamethod
-local getrawmetatable   = getrawmetatable
-local setreadonly       = setreadonly
 local sethiddenproperty = sethiddenproperty
-local newcclosure       = newcclosure or function(f) return f end
-local checkcaller       = checkcaller or function() return false end
-
-local function hookmm(name, fn)
-    if hookmetamethod then
-        return hookmetamethod(game, name, newcclosure(fn))
-    end
-    local mt  = getrawmetatable(game)
-    local old = mt[name]
-    setreadonly(mt, false)
-    mt[name] = newcclosure(fn)
-    setreadonly(mt, true)
-    return old
-end
-
-local function unhookmm(name, old)
-    if not old then return end
-    if hookmetamethod then
-        hookmetamethod(game, name, old)
-        return
-    end
-    local mt = getrawmetatable(game)
-    setreadonly(mt, false)
-    mt[name] = old
-    setreadonly(mt, true)
-end
 
 --=====================================================================
--- Tracker — one live set of "my visible instances", shared by M1 and M2.
--- Replaces the per-frame GetDescendants() scan: parts are ingested once
--- on spawn and incrementally as they replicate in.
+-- Tracker — one live set of "my visible instances", shared by every
+-- method. Replaces the per-frame GetDescendants() scan: parts are
+-- ingested once on spawn and incrementally as they replicate in.
 --=====================================================================
 
 local EFFECT_PROP = {
@@ -73,8 +55,10 @@ local EFFECT_PROP = {
 local Tracker = {
     parts   = {},   -- [BasePart]  = true   (non-HRP)
     effects = {},   -- [Instance]  = propertyName
+    motors  = {},   -- [Motor6D]   = true
     char    = nil,
     hum     = nil,
+    hrp     = nil,
     onAdd   = {},   -- array of fn(inst, kind)
     onChar  = {},   -- array of fn(char)
     _conns  = {},
@@ -85,6 +69,7 @@ local function classify(inst)
     if inst:IsA("BasePart") then
         return inst.Name ~= "HumanoidRootPart" and "part" or nil
     end
+    if inst:IsA("Motor6D") then return "motor" end
     return EFFECT_PROP[inst.ClassName] and "effect" or nil
 end
 
@@ -93,6 +78,8 @@ function Tracker._ingest(inst)
     if not kind then return end
     if kind == "part" then
         Tracker.parts[inst] = true
+    elseif kind == "motor" then
+        Tracker.motors[inst] = true
     else
         Tracker.effects[inst] = EFFECT_PROP[inst.ClassName]
     end
@@ -111,8 +98,10 @@ function Tracker._bind(char)
     Tracker._drop()
     Tracker.char = char
     Tracker.hum  = char:FindFirstChildOfClass("Humanoid")
+    Tracker.hrp  = char:FindFirstChild("HumanoidRootPart")
     table.clear(Tracker.parts)
     table.clear(Tracker.effects)
+    table.clear(Tracker.motors)
 
     for _, d in ipairs(char:GetDescendants()) do
         Tracker._ingest(d)
@@ -122,6 +111,7 @@ function Tracker._bind(char)
     table.insert(Tracker._conns, char.DescendantRemoving:Connect(function(inst)
         Tracker.parts[inst]   = nil
         Tracker.effects[inst] = nil
+        Tracker.motors[inst]  = nil
     end))
 
     for _, fn in ipairs(Tracker.onChar) do
@@ -149,26 +139,60 @@ function Tracker.release()
     Tracker._drop()
     table.clear(Tracker.parts)
     table.clear(Tracker.effects)
-    Tracker.char, Tracker.hum = nil, nil
+    table.clear(Tracker.motors)
+    Tracker.char, Tracker.hum, Tracker.hrp = nil, nil, nil
+end
+
+-- Walk up from a part to see whether it belongs to an equipped Tool.
+-- Tools parent under the character on equip, so the walk is 2-3 deep.
+local function inTool(inst)
+    local p = inst.Parent
+    while p and p ~= Tracker.char and p ~= workspace do
+        if p:IsA("Tool") then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function hideNametag(store)
+    local hum = Tracker.hum
+    if not (CONFIG.HIDE_NAMETAG and hum) then return end
+    if store[hum] == nil then
+        store[hum] = {
+            hum.DisplayDistanceType, hum.NameDisplayDistance, hum.HealthDisplayDistance,
+        }
+    end
+    hum.DisplayDistanceType   = Enum.HumanoidDisplayDistanceType.None
+    hum.NameDisplayDistance   = 0
+    hum.HealthDisplayDistance = 0
+end
+
+local function restoreNametag(saved)
+    local hum = Tracker.hum
+    if not (hum and saved) then return end
+    hum.DisplayDistanceType   = saved[1]
+    hum.NameDisplayDistance   = saved[2]
+    hum.HealthDisplayDistance = saved[3]
 end
 
 --=====================================================================
 -- GUI
 --=====================================================================
 
-local old = (gethui and gethui() or game:GetService("CoreGui")):FindFirstChild(CONFIG.GUI_NAME)
+local host = (gethui and gethui()) or game:GetService("CoreGui")
+local old  = host:FindFirstChild(CONFIG.GUI_NAME)
 if old then old:Destroy() end
 
 local sg = Instance.new("ScreenGui")
-sg.Name            = CONFIG.GUI_NAME
-sg.ResetOnSpawn    = false
-sg.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-sg.Parent          = (gethui and gethui()) or game:GetService("CoreGui")
+sg.Name           = CONFIG.GUI_NAME
+sg.ResetOnSpawn   = false
+sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+sg.Parent         = host
 
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 250, 0, 166)
-frame.Position         = UDim2.new(0, 12, 0.5, -83)
-frame.BackgroundColor3  = Color3.fromRGB(16, 16, 18)
+frame.Size             = UDim2.new(0, 250, 0, 202)
+frame.Position         = UDim2.new(0, 12, 0.5, -101)
+frame.BackgroundColor3 = Color3.fromRGB(16, 16, 18)
 frame.BorderSizePixel  = 0
 frame.Active           = true
 frame.Draggable        = true
@@ -208,13 +232,14 @@ local function makeBtn(label, yOff, onColor)
     end
 end
 
-local btn1, paint1 = makeBtn("LTM Loop",   30,  Color3.fromRGB(0, 132, 62))
-local btn2, paint2 = makeBtn("Meta Hook",  66,  Color3.fromRGB(0, 92, 178))
-local btn3, paint3 = makeBtn("Net Desync", 102, Color3.fromRGB(150, 74, 0))
+local btn1, paint1 = makeBtn("Transparency  (self)", 30,  Color3.fromRGB(0, 132, 62))
+local btn2, paint2 = makeBtn("Joint Crush",         66,  Color3.fromRGB(0, 92, 178))
+local btn3, paint3 = makeBtn("Net Desync",          102, Color3.fromRGB(150, 74, 0))
+local btn4, paint4 = makeBtn("Under Map",           138, Color3.fromRGB(132, 0, 78))
 
 local status = Instance.new("TextLabel")
 status.Size                   = UDim2.new(1, -20, 0, 20)
-status.Position               = UDim2.new(0, 10, 0, 138)
+status.Position               = UDim2.new(0, 10, 0, 174)
 status.BackgroundTransparency = 1
 status.Text                   = "idle"
 status.TextColor3             = Color3.fromRGB(118, 118, 126)
@@ -224,16 +249,22 @@ status.TextSize               = 11
 status.Parent                 = frame
 
 --=====================================================================
--- Method 1 — LocalTransparencyModifier enforcement
+-- Method 1 — Transparency + LocalTransparencyModifier   [LOCAL ONLY]
+--
+-- Both properties are client-render state. Roblox replicates property
+-- changes server->client only, so nothing here reaches another player;
+-- this hides your body from your own camera and nothing more. Kept
+-- because it is the only method that leaves the rig completely intact,
+-- which matters when a game validates its own character every frame.
 --
 -- Runs at RenderPriority.Last+1: LTM is a render-frame property, so the
 -- write has to land after the renderer and the Humanoid have had their
--- pass, otherwise a camera/state change silently clears it.
--- Writes are gated on a value check, so a steady frame costs one compare
--- per part instead of one property write per part.
+-- pass, otherwise a camera/state change silently clears it. Writes are
+-- gated on a value check, so a steady frame costs one compare per part
+-- instead of one property write per part.
 --=====================================================================
 
-local m1On, m1Orig, m1EffectClock = false, {}, 0
+local m1On, m1Orig, m1Transp, m1EffectClock = false, {}, {}, 0
 
 local function m1HideEffect(inst)
     local prop = Tracker.effects[inst]
@@ -243,54 +274,43 @@ local function m1HideEffect(inst)
     if inst[prop] ~= want then inst[prop] = want end
 end
 
-local function m1HideNametag()
-    local hum = Tracker.hum
-    if not (CONFIG.HIDE_NAMETAG and hum) then return end
-    if m1Orig[hum] == nil then
-        m1Orig[hum] = {
-            hum.DisplayDistanceType, hum.NameDisplayDistance, hum.HealthDisplayDistance,
-        }
-    end
-    hum.DisplayDistanceType    = Enum.HumanoidDisplayDistanceType.None
-    hum.NameDisplayDistance    = 0
-    hum.HealthDisplayDistance  = 0
+local function m1HidePart(part)
+    if m1Transp[part] == nil then m1Transp[part] = part.Transparency end
+    if part.Transparency ~= 1 then part.Transparency = 1 end
+    if part.LocalTransparencyModifier ~= 1 then part.LocalTransparencyModifier = 1 end
 end
 
 local function m1OnAdd(inst, kind)
     if not m1On then return end
     if kind == "part" then
-        inst.LocalTransparencyModifier = 1
-    else
+        m1HidePart(inst)
+    elseif kind == "effect" then
         m1HideEffect(inst)
     end
 end
 
 local function m1OnChar()
     if not m1On then return end
-    m1HideNametag()
+    hideNametag(m1Orig)
 end
 
 local function m1Step(dt)
-    for part in pairs(Tracker.parts) do
-        if part.LocalTransparencyModifier ~= 1 then
-            part.LocalTransparencyModifier = 1
-        end
-    end
+    for part in pairs(Tracker.parts) do m1HidePart(part) end
 
     m1EffectClock += dt
     if m1EffectClock >= CONFIG.EFFECT_PERIOD then
         m1EffectClock = 0
         for inst in pairs(Tracker.effects) do m1HideEffect(inst) end
-        m1HideNametag()
+        hideNametag(m1Orig)
     end
 end
 
 local function m1Start()
     m1On = true
     Tracker.retain()
-    for part in pairs(Tracker.parts) do part.LocalTransparencyModifier = 1 end
+    for part in pairs(Tracker.parts) do m1HidePart(part) end
     for inst in pairs(Tracker.effects) do m1HideEffect(inst) end
-    m1HideNametag()
+    hideNametag(m1Orig)
     RunService:BindToRenderStep("InvisM1", Enum.RenderPriority.Last.Value + 1, m1Step)
 end
 
@@ -298,15 +318,18 @@ local function m1Stop()
     m1On = false
     pcall(function() RunService:UnbindFromRenderStep("InvisM1") end)
 
-    for part in pairs(Tracker.parts) do
-        part.LocalTransparencyModifier = 0
+    for part, t in pairs(m1Transp) do
+        if part.Parent then
+            part.Transparency = t
+            part.LocalTransparencyModifier = 0
+        end
     end
+    table.clear(m1Transp)
+
     for inst, saved in pairs(m1Orig) do
         if inst.Parent then
             if typeof(saved) == "table" then
-                inst.DisplayDistanceType   = saved[1]
-                inst.NameDisplayDistance   = saved[2]
-                inst.HealthDisplayDistance = saved[3]
+                restoreNametag(saved)
             else
                 local prop = Tracker.effects[inst]
                 if prop then inst[prop] = saved end
@@ -318,31 +341,43 @@ local function m1Stop()
 end
 
 --=====================================================================
--- Method 2 — metatable intercept
+-- Method 2 — Motor6D.Transform collapse            [animation channel]
 --
--- __newindex is what makes this survive resets: a game script's write to
--- LocalTransparencyModifier / Transparency on one of our parts is
--- swallowed outright, so a reset loop can't put the limb back. The value
--- it tried to write is remembered.
+-- Motor6D world math is:
+--     Part1.CFrame = Part0.CFrame * C0 * Transform * C1:Inverse()
 --
--- __index then hands that remembered value back, so a script reading the
--- property sees exactly what it believes it set — the character reads as
--- fully normal to anything that checks, while the real render value stays
--- pinned at 1. Our own reads (checkcaller) pass straight through.
+-- Solving that for Part1.CFrame == Part0.CFrame gives
+--     Transform = C0:Inverse() * C1
+-- which drops every limb exactly onto its parent joint's origin. Applied
+-- across the whole rig it folds the character into a single point at the
+-- root, so there is no silhouette left to see.
 --
--- __index fires for every property read in the entire game, so the guard
--- order matters: interned-string compare first, then a raw table lookup.
--- No Instance access happens inside either hook, so it cannot recurse.
+-- Transform is the value the Animator writes each frame and is carried on
+-- the animation replication channel — the same path that lets other
+-- players watch you walk. Writing it on Heartbeat lands after the
+-- Animator's step-phase write and immediately before the replication
+-- snapshot, so ours is the value that goes out.
+--
+-- Whether a raw script write is picked up by that channel depends on the
+-- engine tagging the property dirty for the animation replicator, which
+-- is not documented and does vary by game. Treat M2 as the cheap attempt
+-- that leaves the rig intact; M4 is the reliable one.
+--
+-- LTM is pinned locally so you are not staring at the folded blob.
 --=====================================================================
 
-local SPOOF_PROP = { LocalTransparencyModifier = true, Transparency = true }
+local m2On, m2Conn = false, nil
 
-local m2On, m2Spoof = false, {}
-local m2OldIndex, m2OldNewIndex
-
-local function m2OnAdd(inst, kind)
-    if m2On and kind == "part" and m2OldNewIndex then
-        m2OldNewIndex(inst, "LocalTransparencyModifier", 1)
+local function m2Fold()
+    for motor in pairs(Tracker.motors) do
+        if motor.Parent then
+            motor.Transform = motor.C0:Inverse() * motor.C1
+        end
+    end
+    for part in pairs(Tracker.parts) do
+        if part.LocalTransparencyModifier ~= 1 then
+            part.LocalTransparencyModifier = 1
+        end
     end
 end
 
@@ -350,49 +385,25 @@ local function m2Start()
     if m2On then return end
     m2On = true
     Tracker.retain()
-
-    m2OldIndex = hookmm("__index", function(self, key)
-        if SPOOF_PROP[key] and not checkcaller() and Tracker.parts[self] then
-            local v = m2Spoof[self]
-            if v ~= nil then return v end
-            return 0
-        end
-        return m2OldIndex(self, key)
-    end)
-
-    m2OldNewIndex = hookmm("__newindex", function(self, key, val)
-        if SPOOF_PROP[key] and not checkcaller() and Tracker.parts[self] then
-            m2Spoof[self] = val   -- let it think the write landed
-            return
-        end
-        return m2OldNewIndex(self, key, val)
-    end)
-
-    -- Apply through the captured original so our own __newindex can't eat it.
-    for part in pairs(Tracker.parts) do
-        m2OldNewIndex(part, "LocalTransparencyModifier", 1)
-    end
+    m2Conn = RunService.Heartbeat:Connect(m2Fold)
 end
 
 local function m2Stop()
     if not m2On then return end
     m2On = false
+    if m2Conn then m2Conn:Disconnect() end
+    m2Conn = nil
 
+    -- The Animator overwrites Transform on its next step, so the rig
+    -- recovers on its own; only the local render override needs undoing.
     for part in pairs(Tracker.parts) do
-        if part.Parent and m2OldNewIndex then
-            m2OldNewIndex(part, "LocalTransparencyModifier", 0)
-        end
+        if part.Parent then part.LocalTransparencyModifier = 0 end
     end
-
-    unhookmm("__newindex", m2OldNewIndex)
-    unhookmm("__index",    m2OldIndex)
-    m2OldIndex, m2OldNewIndex = nil, nil
-    table.clear(m2Spoof)
     Tracker.release()
 end
 
 --=====================================================================
--- Method 3 — network ownership desync
+-- Method 3 — network ownership desync                 [physics channel]
 --
 -- Dropping SimulationRadius to 0 makes the client stop claiming physics
 -- ownership of its own character, so it stops pushing CFrame updates.
@@ -464,50 +475,219 @@ UIS.InputBegan:Connect(function(input, gpe)
 end)
 
 --=====================================================================
+-- Method 4 — rig break + phase-split CFrame drop      [physics channel]
+--
+-- A rigged character is ONE physics assembly rooted at HumanoidRootPart,
+-- so only the root's CFrame replicates and limb writes are discarded —
+-- which is why naively CFraming a limb does nothing to other clients.
+-- Disabling every Motor6D promotes each limb to its own assembly, and a
+-- client-owned assembly replicates its own CFrame. Now limb writes land.
+--
+-- The frame order Roblox runs is:
+--     RenderStepped -> render -> Stepped -> physics -> Heartbeat -> replicate
+--
+-- so the two writes can disagree on purpose:
+--     Heartbeat      -> park the body UNDER_DEPTH studs down   (replicated)
+--     RenderStepped  -> restore the captured pose at the root  (rendered)
+--
+-- Other players read the Heartbeat value and see empty ground. Your own
+-- camera reads the RenderStepped value and sees your body where it should
+-- be. HumanoidRootPart is never touched by any of this, so the collision
+-- capsule, the tool origin, movement and every server-side hit test stay
+-- exactly where you are standing — you can hit people above you.
+--
+-- Equipped tool parts are exempted (KEEP_TOOL_UP): a touch-damage weapon
+-- welded to a hand that just went underground would only ever hit dirt.
+-- The cost is a floating weapon visible to others, which is the honest
+-- trade for having your swings connect.
+--
+-- The pose is captured once at toggle-on because the rig is broken, so
+-- your body is a fixed stance rather than an animated one. Limbs are set
+-- CanCollide=false and have their velocity zeroed each frame so loose
+-- assemblies cannot shove the root around or snag on the map.
+--=====================================================================
+
+local m4On = false
+local m4Pose, m4Motors, m4Collide, m4Orig = {}, {}, {}, {}
+local m4Render, m4Heart = nil, nil
+
+local ZERO3 = Vector3.new(0, 0, 0)
+
+local function m4Capture(char)
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    -- Pose first: once the motors are off the limbs start drifting.
+    local inv = hrp.CFrame:Inverse()
+    table.clear(m4Pose)
+    table.clear(m4Collide)
+    for part in pairs(Tracker.parts) do
+        if not (CONFIG.KEEP_TOOL_UP and inTool(part)) then
+            m4Pose[part]    = inv * part.CFrame
+            m4Collide[part] = part.CanCollide
+            part.CanCollide = false
+        end
+    end
+
+    table.clear(m4Motors)
+    for motor in pairs(Tracker.motors) do
+        if motor.Enabled then
+            m4Motors[#m4Motors + 1] = motor
+            motor.Enabled = false
+        end
+    end
+
+    hideNametag(m4Orig)
+    return true
+end
+
+local function m4Restore()
+    for _, motor in ipairs(m4Motors) do
+        if motor.Parent then motor.Enabled = true end
+    end
+    table.clear(m4Motors)
+
+    for part, collide in pairs(m4Collide) do
+        if part.Parent then part.CanCollide = collide end
+    end
+    table.clear(m4Collide)
+    table.clear(m4Pose)
+
+    for _, saved in pairs(m4Orig) do restoreNametag(saved) end
+    table.clear(m4Orig)
+end
+
+-- Heartbeat: last write before the replication snapshot. This is the
+-- body position every other client receives.
+local function m4Down()
+    local hrp = Tracker.hrp
+    if not (hrp and hrp.Parent) then return end
+    local under = CFrame.new(hrp.Position.X, hrp.Position.Y - CONFIG.UNDER_DEPTH, hrp.Position.Z)
+
+    for part in pairs(Tracker.parts) do
+        if not (CONFIG.KEEP_TOOL_UP and inTool(part)) then
+            part.CFrame = under
+            part.AssemblyLinearVelocity  = ZERO3
+            part.AssemblyAngularVelocity = ZERO3
+        end
+    end
+end
+
+-- RenderStepped (Last+1, after camera and Humanoid): the pose your own
+-- screen draws. Never replicated, because Heartbeat overwrites it before
+-- the snapshot is taken.
+local function m4Up()
+    local hrp = Tracker.hrp
+    if not (hrp and hrp.Parent) then return end
+    local root = hrp.CFrame
+
+    for part in pairs(Tracker.parts) do
+        local pose = m4Pose[part]
+        if pose then
+            part.CFrame = root * pose
+        elseif CONFIG.KEEP_TOOL_UP and inTool(part) then
+            -- Equipped after capture: pin it just ahead of the root so a
+            -- touch weapon still resolves at the surface.
+            part.CFrame = root * CFrame.new(1, 0, -1.5)
+        end
+    end
+end
+
+local function m4OnAdd(inst, kind)
+    if not (m4On and kind == "part") then return end
+    local hrp = Tracker.hrp
+    if not hrp then return end
+    if CONFIG.KEEP_TOOL_UP and inTool(inst) then return end
+    m4Pose[inst]    = hrp.CFrame:Inverse() * inst.CFrame
+    m4Collide[inst] = inst.CanCollide
+    inst.CanCollide = false
+end
+
+local function m4OnChar(char)
+    if not m4On then return end
+    m4Capture(char)
+end
+
+local function m4Start()
+    if m4On then return end
+    Tracker.retain()
+    if not m4Capture(lp.Character) then
+        Tracker.release()
+        error("no character", 0)
+    end
+    m4On = true
+
+    -- Unwind fully if either binding fails, so a throw here can never
+    -- strand the method half-running with the button reading OFF.
+    local ok, err = pcall(function()
+        m4Heart = RunService.Heartbeat:Connect(m4Down)
+        RunService:BindToRenderStep("InvisM4", Enum.RenderPriority.Last.Value + 1, m4Up)
+        m4Render = true
+    end)
+    if not ok then
+        m4On = false
+        if m4Heart then m4Heart:Disconnect(); m4Heart = nil end
+        if m4Render then
+            pcall(function() RunService:UnbindFromRenderStep("InvisM4") end)
+            m4Render = nil
+        end
+        m4Restore()
+        Tracker.release()
+        error(err, 0)
+    end
+end
+
+local function m4Stop()
+    if not m4On then return end
+    m4On = false
+
+    if m4Heart then m4Heart:Disconnect() end
+    m4Heart = nil
+    if m4Render then
+        pcall(function() RunService:UnbindFromRenderStep("InvisM4") end)
+        m4Render = nil
+    end
+
+    m4Restore()
+    Tracker.release()
+end
+
+--=====================================================================
 -- Wiring
 --=====================================================================
 
 table.insert(Tracker.onAdd,  m1OnAdd)
-table.insert(Tracker.onAdd,  m2OnAdd)
+table.insert(Tracker.onAdd,  m4OnAdd)
 table.insert(Tracker.onChar, m1OnChar)
+table.insert(Tracker.onChar, m4OnChar)
 
-do
+local function bind(btn, paint, start, stop, guard)
     local on = false
-    btn1.MouseButton1Click:Connect(function()
-        on = not on
-        local ok, err = pcall(on and m1Start or m1Stop)
-        if not ok then warn("[Invis] M1:", err); on = not on; return end
-        paint1(on)
-    end)
-end
-
-do
-    local on = false
-    btn2.MouseButton1Click:Connect(function()
-        if not (hookmetamethod or (getrawmetatable and setreadonly)) then
-            status.Text = "M2 unsupported: no metatable API"
-            return
+    btn.MouseButton1Click:Connect(function()
+        if not on and guard then
+            local msg = guard()
+            if msg then status.Text = msg; return end
         end
         on = not on
-        local ok, err = pcall(on and m2Start or m2Stop)
-        if not ok then warn("[Invis] M2:", err); on = not on; return end
-        paint2(on)
+        local ok, err = pcall(on and start or stop)
+        if not ok then
+            warn("[Invis]", err)
+            status.Text = tostring(err):sub(1, 34)
+            on = not on
+            return
+        end
+        paint(on)
     end)
 end
 
-do
-    local on = false
-    btn3.MouseButton1Click:Connect(function()
-        if not sethiddenproperty then
-            status.Text = "M3 unsupported: no sethiddenproperty"
-            return
-        end
-        on = not on
-        local ok, err = pcall(on and m3Start or m3Stop)
-        if not ok then warn("[Invis] M3:", err); on = not on; return end
-        paint3(on)
-    end)
-end
+bind(btn1, paint1, m1Start, m1Stop)
+bind(btn2, paint2, m2Start, m2Stop)
+bind(btn3, paint3, m3Start, m3Stop, function()
+    if not sethiddenproperty then return "M3 unsupported: no sethiddenproperty" end
+end)
+bind(btn4, paint4, m4Start, m4Stop, function()
+    if not lp.Character then return "M4: no character" end
+end)
 
 local statusClock = 0
 RunService.Heartbeat:Connect(function(dt)
@@ -520,7 +700,9 @@ RunService.Heartbeat:Connect(function(dt)
     if statusClock < 0.1 then return end
     statusClock = 0
 
-    if m3On then
+    if m4On then
+        status.Text = string.format("under map %dst  ·  hitbox up", CONFIG.UNDER_DEPTH)
+    elseif m3On then
         status.Text = string.format("drift %.1f studs  ·  [%s] resync",
             m3Drift, CONFIG.RESYNC_KEY.Name)
     elseif m1On or m2On then
