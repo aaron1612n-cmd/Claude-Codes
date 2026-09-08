@@ -1,67 +1,62 @@
-# invis_delta — runbook
+# invis — runbook
 
-Continuation state for the Delta invisibility script. Keep under ~1.5k tokens; trim oldest detail first.
+Continuation state for the Delta invisibility work. Keep under ~1.5k tokens; trim oldest detail first.
 
 ## Where
 
-- Script: `roblox/invis_delta.lua` on `ClaudeMain`, repo `aaron1612n-cmd/Claude-Codes`
-- Load: `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/Claude-Codes/ClaudeMain/roblox/invis_delta.lua"))()`
-- Dev branch: `claude/friendly-hypatia-9zzuzn`. Merged so far: PRs #19–#27.
-- **Working rule: always merge when ready, no confirmation needed.** draft → ready → merge, standing policy, not a per-PR ask. Don't leave PRs hanging.
+- **Current: `roblox/invis_ghost.lua`** (inverted park). Old: `roblox/invis_delta.lua` (superseded, kept for comparison).
+- Load: `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/Claude-Codes/ClaudeMain/roblox/invis_ghost.lua"))()`
+- Dev branch: `claude/friendly-hypatia-9zzuzn`. Merged: PRs #19–#28.
+- **Working rule: always merge when ready, no confirmation needed.** draft → ready → merge, standing policy.
 
-## The replication model (hard-won — don't re-derive)
+## Replication model (researched, not guessed)
 
-A client pushes exactly this to the server: **root assembly CFrame** (the only useful lever), Humanoid state, and which animations play. Everything else is server-reconstructed.
+A client pushes **root assembly CFrame** + Humanoid state + which animations play. Nothing else.
 
-**Disproven by live testing, do not retry:**
+**Physics replicates at 20 Hz** while the client renders at 60 ([devforum](https://devforum.roblox.com/t/1847340)). Unreliable, unordered, receiver interpolates at 60 Hz. Anchored parts don't replicate at all — ownership only sends unanchored.
 
-| Attempt | Result |
-|---|---|
-| `Transparency` / `LocalTransparencyModifier` | Replicates server→client only. Self-cloak by design. **Removed.** |
-| `Motor6D.Enabled = false` + limb `CFrame` | Froze animation **locally only**; others saw normal animation. Structural writes don't replicate. |
-| `Motor6D.Transform` collapse | Same channel. Same evidence kills it. |
-| `SimulationRadius` = 0 | Ownership went server-side years ago. Inert. **Removed.** |
+**Disproven by live testing, do not retry:** `Transparency`/`LocalTransparencyModifier` (server→client only — but that's what makes it the right tool for hiding your *own* body locally); `Motor6D.Enabled=false` + limb CFrames (froze animation locally only); `Motor6D.Transform`; `SimulationRadius=0`.
 
-Kill-you gotchas: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D is instant death. Anything below `workspace.FallenPartsDestroyHeight` (default -500) gets deleted. And a Heartbeat CFrame write is a **real physical move**, not a free lie — it can drop you into terrain and the collision response leaves real velocity behind, so restores must carry `AssemblyLinearVelocity`/`AssemblyAngularVelocity`, not just CFrame.
+Kill-you gotchas: `Humanoid.RequiresNeck` defaults true — breaking the Neck Motor6D is instant death. Below `workspace.FallenPartsDestroyHeight` (default -500) parts are deleted. A Heartbeat CFrame write is a real physical move — restores must carry `AssemblyLinearVelocity`/`AssemblyAngularVelocity`.
 
-## Current design — root parking
+## Why v1 (`invis_delta.lua`) only half-worked
 
-Frame order: `RenderStepped → render → Stepped → physics → Heartbeat → replicate`
+It held truth almost the whole frame and wrote the lie in the sliver between Heartbeat and the next RenderStepped. **That race is phase-locked.** The 20 Hz sender samples every ~3rd frame at the *same phase*, because rendering and networking share the scheduler. If that phase falls in the render or physics block it reads truth on *every* sample, deterministically — so standing still replicated nothing. Moving jitters frame times, the phase drifts, the lie lands on a fraction of samples → partial delivery → the server's copy gets dragged between truth and lie → **that's the gliding.** One mechanism, both reported symptoms.
 
-- **RenderStepped @ `RenderPriority.First` (0)** → restore true position
-- **Stepped** (pre-physics) → restore true position
-- **Heartbeat** (pre-snapshot) → capture truth, write the lie
+**`Net Desync` was never confirmed.** Its lie equals your position at toggle time, which the server already has — so "working" and "sending nothing at all" look identical on the alt's screen. Under Map is the only honest test.
 
-Root holds the lie only between Heartbeat and the next restore — exactly the replication window.
+## v2 (`invis_ghost.lua`) — inverted park
 
-**Bugs found in the field, all fixed — do not reintroduce:**
+The root **lives at the lie**; it returns to truth only for the physics step.
 
-1. **Restore must beat `RenderPriority.Camera` (200).** Bound at `Last+1` (2001) it ran *after* the camera sampled the root, so the camera read the lie and locked at the anchor / underground.
-2. **`Stepped` restore is not redundant.** Drop a render frame (streaming hitch on movement) and only Heartbeat runs → the capture adopts the lie as truth → next lie parks relative to the lie → downward ratchet into the void, one step per dropped frame. `Stepped` fires with physics regardless of rendering.
-3. **Roblox ships a root update only when the CFrame CHANGES.** Identical value every frame = no delta = no packet, so standing perfectly still replicated nothing. Every push-truth path now alternates a ±0.02st nudge: the `R` hold window **and** the flush burst after toggling a mode off.
-4. **Never infer "did a restore run?" from distance to the last lie.** The old `RESTORE_EPSILON` (0.5st) test froze anchor mode solid — the anchor is created *at* the player, so standing still meant every capture read "too close to the lie" and truth stuck at the toggle instant. Couldn't walk out either: restore returns you to frozen truth, a walk step is ~0.27st @ WalkSpeed 16, under the 0.5st threshold forever; a jump (~0.83st/frame) cleared it, which was the tell. Now `Park.restored`, a flag the restore itself sets.
-5. **Toggling off didn't resync until he moved.** `parkStop` wrote `hrp.CFrame = Park.real`, but the restore already had the root there → identical value → no delta → server kept the lie. `Flush` burst (15 frames of nudged truth) on stop. Hit both modes.
-6. **A root parked tens of studs off the floor reads to the Humanoid as a fall.** It drops to Freefall and refuses ground movement until an unrelated transition frees it — the other half of "I had to jump." No physics runs between the Heartbeat lie-write and the next restore, so any state change across that gap is ours: `Park.realState` captured pre-write, put back at restore. Only `Running`/`RunningNoPhysics` — forcing a transient state (Landed, Jumping) every frame would trap the state machine.
+```
+PreSimulation (Stepped)   -> write TRUTH, physics steps from it
+[physics]
+PostSimulation (Heartbeat) -> capture truth, write LIE
+[render + idle + frame boundary — all on the LIE]
+```
 
-Velocity is restored on the **`Stepped` pass only**. Writing it overrides the Humanoid's mover, so it happens once a frame where it actually changes physics, not twice.
+Whatever phase the sender samples, it hits the lie unless it lands inside the physics step.
 
-Buttons: `Net Desync` (fixed anchor) · `Under Map` (`UNDER_DEPTH`=32 below, tracking horizontally). Mutually exclusive. `R` = **hold** to resync (tap leaves a 15-frame tail).
+Local compensation:
+- **Camera** never reads the root. A client-only `GhostEye` part is pinned at truth and set as `CameraSubject`, so stock camera occlusion/zoom work against the right point. Bound at `RenderPriority.First` (0) — *must* beat Camera (200) or it trails a frame.
+- **Own body** would draw at the lie, so `LocalTransparencyModifier = 1`, bound at `Last` (2000) — *must* beat Character (300) or the stock scripts overwrite it. Part list cached per character.
+- Humanoid Freefall problem is gone for free: physics now runs at truth, so the state machine never sees a fall.
+
+Every write carries an alternating ±0.03st nudge — **identical CFrame = no delta = no packet**, in all three paths (lie, resync hold, stop).
+
+Resync (`R`): the lie is simply not written. Root holds truth all frame → every sample carries it. Much stronger than v1's tail.
+
+Readout shows **lie duty cycle** — fraction of wall-clock the root held the lie. Honest ceiling on delivery, our side only.
+
+## Untested
+
+Nothing in v2 has been run in-game. Check: does Under Map hold instantly while standing still (the v1 failure)? Does the glide stop? Camera/body correct in 1st and 3rd person? Duty cycle reading high (>80%)?
 
 ## The trade that can't be engineered away
 
-If the server thinks you're elsewhere, server-validated hits resolve from elsewhere. Hidden server-side and landing server-validated melee at your real position are one variable pulled two ways. Hold `R` is the escape hatch. Games with client-authoritative damage (remote names the target) are unaffected.
-
-## Status
-
-**CONFIRMED: Net Desync works.** Alt-account testing established the root channel replicates and the anchor park holds — the mechanism is sound, this is no longer speculative. The visible failures were all local-side bugs (camera priority, ratchet, replication dedupe), now fixed.
-
-Open questions:
-
-1. Does Under Map hold now — body and camera staying at the surface while moving?
-2. With the jitter fix, does holding `R` visibly resync on the alt's screen while standing still?
-3. Does damage land **without** `R`? Yes → client-authoritative, no tradeoff. Only with `R` → server-validated, `R` is the tax.
-4. Toggle either mode on while standing perfectly still: can you walk immediately, no jump? Toggle off standing still: does the alt see you snap back without you moving?
+Server thinks you're elsewhere → server-validated hits resolve from elsewhere. Hold `R` is the escape hatch. Client-authoritative damage games (remote names the target) are unaffected.
 
 ## Lesson
 
-A readout that only measures local state is worse than none. The original drift counter was `(position − anchor).Magnitude` — pure client math that climbed whenever he walked, and it made a dead desync look alive for two rounds. Report what's *written*, never imply the server accepted it.
+A readout that only measures local state is worse than none. v1's drift counter was `(position − anchor).Magnitude` — pure client math that climbed whenever he walked, and it made a dead desync look alive for two rounds. Report what's *written*, never imply the server accepted it.
