@@ -1,69 +1,80 @@
 --=====================================================================
 -- roblox/invis_delta.lua
--- Delta executor — invisibility methods, GUI toggles.
+-- Delta executor — root-parking desync, GUI toggles.
 --
---   1. Transparency  direct Transparency + LTM writes          [LOCAL ONLY]
---   2. Sim Radius    legacy SimulationRadius ownership drop    [likely dead]
---   3. Net Desync    root parked at a fixed anchor             [root channel]
---   4. Under Map     root parked below you, tracking           [root channel]
+--   1. Net Desync   root parked at a fixed anchor       [root channel]
+--   2. Under Map    root parked below you, tracking     [root channel]
 --
 -- WHAT A CLIENT CAN ACTUALLY PUSH TO THE SERVER
 --
--- Live testing settled this. An earlier build disabled every Motor6D and
--- CFramed the limbs underground; the reported result was "freezes my
--- animation but just for me, others still see my normal animation". That
--- single observation proves the chain: the joint writes landed locally,
--- did NOT replicate, so the server's rig stayed intact and rebuilt the
--- pose for everyone else from the animation stream.
---
--- So: structural and pose state does not replicate from a client. Not
--- Motor6D.Enabled, not Motor6D.Transform, not limb CFrames, and not
--- Transparency (that one never could — property changes replicate
--- server->client only). The ONLY character state a client pushes is the
+-- Settled by live testing. The only character state a client pushes is the
 -- root assembly's CFrame, plus Humanoid state and which animations play.
+-- Structural and pose state does not replicate from a client: not
+-- Motor6D.Enabled, not Motor6D.Transform, not limb CFrames, and not
+-- Transparency (property changes replicate server->client only). An
+-- earlier build disabled every Motor6D and CFramed the limbs underground;
+-- it froze the animation locally while everyone else saw normal movement,
+-- which proves the joint writes never left the machine.
 --
--- Everything that hides you from other players therefore has to move the
--- ROOT. M3 and M4 do exactly that, via the frame order:
+-- Net Desync has since been confirmed working against a second client, so
+-- the root channel does replicate and this approach is sound. Transparency
+-- and SimulationRadius toggles were removed: the first is self-cloak only
+-- by design, the second has been inert since Roblox moved network
+-- ownership server-side.
+--
+-- FRAME ORDER — WHERE EACH WRITE GOES AND WHY
 --
 --     RenderStepped -> render -> Stepped -> physics -> Heartbeat -> replicate
 --
---     Heartbeat      -> write the fake root position   (sampled, replicated)
---     RenderStepped  -> write the true root position   (physics + camera)
+--     RenderStepped (priority First, 0) -> restore TRUE position
+--     Stepped       (pre-physics)       -> restore TRUE position
+--     Heartbeat     (pre-snapshot)      -> capture truth, write the LIE
 --
--- Physics always runs from the true position, so movement, animation and
--- collision behave normally; only the sampled value is a lie. Nothing is
--- structurally modified, so no frozen animation.
+-- The root holds the lie only between Heartbeat and the next frame's first
+-- restore, which is exactly the replication window. Three details, each one
+-- a bug that was live in an earlier build:
 --
--- The Heartbeat write is still a physical move, though: for M4 it shoves
--- the HRP into terrain, and the physics step before the next RenderStepped
--- generates a real collision-response velocity. Restoring only the CFrame
--- there left that velocity live, and it bled downward frame over frame
--- until fall damage or FallenPartsDestroyHeight killed the character —
--- confirmed by an alt-account observer watching it happen. parkUp now
--- restores the pre-write velocity alongside the CFrame, not just position.
+-- 1. The restore MUST run before RenderPriority.Camera (200). The default
+--    camera script samples the root at 200; a restore bound at Last+1
+--    (2001) runs after it, so the camera reads the lie and locks itself at
+--    the anchor or underground. First (0) beats it.
+--
+-- 2. The Stepped restore is not redundant with the RenderStepped one. Drop
+--    a render frame — streaming, load hitch, anything that happens the
+--    moment you start moving — and only Heartbeat runs, so the capture
+--    adopts the LIE as truth and the next lie is parked relative to it.
+--    That ratchets you downward a step per dropped frame until the void
+--    takes you. Stepped fires with the physics step regardless of
+--    rendering, so physics always starts from truth; RESTORE_EPSILON
+--    rejects a sample that is still sitting on the last lie as a backstop.
+--
+-- 3. Roblox ships a root update only when the CFrame actually CHANGES.
+--    Writing an identical value every frame produces no delta and no
+--    packet, so a player standing perfectly still replicates nothing and
+--    the server holds the stale parked position — the resync appears to do
+--    nothing until you walk. The hold window alternates a sub-stud nudge so
+--    every frame of it is a genuine delta.
 --
 -- THE TRADE YOU CANNOT ENGINEER AROUND
 --
 -- If the server believes you are elsewhere, server-validated hits resolve
 -- from elsewhere. Being hidden server-side and landing server-validated
 -- melee at your real position are the same variable pulled two ways.
--- RESYNC_KEY is the escape hatch: it stops the lie for a few frames so
--- your true position replicates and the blow registers. Games that do
--- client-authoritative damage (fire a remote naming the target) are
--- unaffected — hits land wherever the server thinks you are.
---
--- Confirm with a second client. Everything below that concerns other
--- players is unverified from this side.
+-- RESYNC_KEY is the escape hatch: hold it to suspend the lie so your true
+-- position replicates and the blow registers, release to go back under.
+-- Games that do client-authoritative damage (fire a remote naming the
+-- target) are unaffected — hits land wherever the server thinks you are.
 --=====================================================================
 
 local CONFIG = {
-    GUI_NAME      = "InvisGUI",
-    RESYNC_KEY    = Enum.KeyCode.R,   -- hold your true position for a few frames
-    RESYNC_FRAMES = 6,                -- how many frames the lie is suspended
-    EFFECT_PERIOD = 0.5,              -- seconds between effect re-assert passes
-    HIDE_NAMETAG  = true,             -- M1 also kills the humanoid name/health display
-    UNDER_DEPTH   = 32,               -- M4: studs below you the root is parked
-    DESTROY_CLEAR = 32,               -- M4: min studs to stay above FallenPartsDestroyHeight
+    GUI_NAME        = "InvisGUI",
+    RESYNC_KEY      = Enum.KeyCode.R,  -- hold to send your true position
+    RESYNC_FRAMES   = 15,              -- tail frames after release (~0.25s @60)
+    RESYNC_JITTER   = 0.02,            -- studs, alternating, to force a delta
+    UNDER_DEPTH     = 32,              -- studs below you the root is parked
+    DESTROY_CLEAR   = 32,              -- min studs above FallenPartsDestroyHeight
+    RESTORE_EPSILON = 0.5,             -- studs; nearer the last lie than this
+                                       -- means the restore never ran
 }
 
 local Players    = game:GetService("Players")
@@ -71,125 +82,46 @@ local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
 local lp         = Players.LocalPlayer
 
--- ── executor env (undefined globals resolve to nil, never throw) ──────────────
-
-local gethui            = gethui
-local sethiddenproperty = sethiddenproperty
+-- executor env (undefined globals resolve to nil, never throw)
+local gethui = gethui
 
 --=====================================================================
--- Tracker — one live set of "my visible instances".
+-- Character — the live root reference, rebound on respawn.
 --=====================================================================
 
-local EFFECT_PROP = {
-    Decal = "Transparency", Texture = "Transparency",
-    ParticleEmitter = "Enabled", Trail = "Enabled", Beam = "Enabled",
-    Smoke = "Enabled", Fire = "Enabled", Sparkles = "Enabled",
-    BillboardGui = "Enabled", SurfaceGui = "Enabled",
+local Char = {
+    model  = nil,
+    hum    = nil,
+    hrp    = nil,
+    onChar = {},   -- array of fn(model)
 }
 
-local Tracker = {
-    parts   = {},   -- [BasePart] = true   (non-HRP)
-    effects = {},   -- [Instance] = propertyName
-    char    = nil,
-    hum     = nil,
-    hrp     = nil,
-    onAdd   = {},   -- array of fn(inst, kind)
-    onChar  = {},   -- array of fn(char)
-    _conns  = {},
-    _users  = 0,
-}
-
-local function classify(inst)
-    if inst:IsA("BasePart") then
-        return inst.Name ~= "HumanoidRootPart" and "part" or nil
-    end
-    return EFFECT_PROP[inst.ClassName] and "effect" or nil
-end
-
-function Tracker._ingest(inst)
-    local kind = classify(inst)
-    if not kind then return end
-    if kind == "part" then
-        Tracker.parts[inst] = true
-    else
-        Tracker.effects[inst] = EFFECT_PROP[inst.ClassName]
-    end
-    for _, fn in ipairs(Tracker.onAdd) do
-        local ok, err = pcall(fn, inst, kind)
-        if not ok then warn("[Invis] onAdd:", err) end
-    end
-end
-
-function Tracker._drop()
-    for _, c in ipairs(Tracker._conns) do c:Disconnect() end
-    table.clear(Tracker._conns)
-end
-
-function Tracker._bind(char)
-    Tracker._drop()
-    Tracker.char = char
-    Tracker.hum  = char:FindFirstChildOfClass("Humanoid")
-    Tracker.hrp  = char:FindFirstChild("HumanoidRootPart")
-    table.clear(Tracker.parts)
-    table.clear(Tracker.effects)
-
-    for _, d in ipairs(char:GetDescendants()) do
-        Tracker._ingest(d)
-    end
-
-    table.insert(Tracker._conns, char.DescendantAdded:Connect(Tracker._ingest))
-    table.insert(Tracker._conns, char.DescendantRemoving:Connect(function(inst)
-        Tracker.parts[inst]   = nil
-        Tracker.effects[inst] = nil
-    end))
-
-    for _, fn in ipairs(Tracker.onChar) do
-        local ok, err = pcall(fn, char)
+function Char.bind(model)
+    Char.model = model
+    Char.hum   = model:FindFirstChildOfClass("Humanoid")
+    Char.hrp   = model:FindFirstChild("HumanoidRootPart")
+    for _, fn in ipairs(Char.onChar) do
+        local ok, err = pcall(fn, model)
         if not ok then warn("[Invis] onChar:", err) end
     end
 end
 
-function Tracker.retain()
-    Tracker._users += 1
-    if Tracker._users > 1 then return end
-    if lp.Character then Tracker._bind(lp.Character) end
-    Tracker._charConn = lp.CharacterAdded:Connect(function(char)
-        char:WaitForChild("HumanoidRootPart", 10)
+function Char.start()
+    if lp.Character then Char.bind(lp.Character) end
+    lp.CharacterAdded:Connect(function(model)
+        model:WaitForChild("HumanoidRootPart", 10)
         task.wait()
-        Tracker._bind(char)
+        Char.bind(model)
     end)
 end
 
-function Tracker.release()
-    Tracker._users -= 1
-    if Tracker._users > 0 then return end
-    if Tracker._charConn then Tracker._charConn:Disconnect() end
-    Tracker._charConn = nil
-    Tracker._drop()
-    table.clear(Tracker.parts)
-    table.clear(Tracker.effects)
-    Tracker.char, Tracker.hum, Tracker.hrp = nil, nil, nil
-end
-
-local function hideNametag(store)
-    local hum = Tracker.hum
-    if not (CONFIG.HIDE_NAMETAG and hum) then return end
-    if store[hum] == nil then
-        store[hum] = {
-            hum.DisplayDistanceType, hum.NameDisplayDistance, hum.HealthDisplayDistance,
-        }
-    end
-    hum.DisplayDistanceType   = Enum.HumanoidDisplayDistanceType.None
-    hum.NameDisplayDistance   = 0
-    hum.HealthDisplayDistance = 0
-end
-
-local function restoreNametag(saved)
-    local hum = Tracker.hum
-    if not (hum and saved) then return end
-    hum.DisplayDistanceType   = saved[1]
-    hum.NameDisplayDistance   = saved[2]
-    hum.HealthDisplayDistance = saved[3]
+-- A dead or half-built character is never worth writing to: the root may be
+-- gone, and Humanoid death ragdolls the assembly out from under us.
+local function alive()
+    local hrp, hum = Char.hrp, Char.hum
+    if not (hrp and hrp.Parent) then return false, nil end
+    if not (hum and hum.Health > 0) then return false, nil end
+    return true, hrp
 end
 
 --=====================================================================
@@ -207,8 +139,8 @@ sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 sg.Parent         = host
 
 local frame = Instance.new("Frame")
-frame.Size             = UDim2.new(0, 250, 0, 202)
-frame.Position         = UDim2.new(0, 12, 0.5, -101)
+frame.Size             = UDim2.new(0, 250, 0, 134)
+frame.Position         = UDim2.new(0, 12, 0.5, -67)
 frame.BackgroundColor3 = Color3.fromRGB(16, 16, 18)
 frame.BorderSizePixel  = 0
 frame.Active           = true
@@ -249,14 +181,12 @@ local function makeBtn(label, yOff, onColor)
     end
 end
 
-local btn1, paint1 = makeBtn("Transparency  (self)", 30,  Color3.fromRGB(0, 132, 62))
-local btn2, paint2 = makeBtn("Sim Radius  (legacy)", 66,  Color3.fromRGB(88, 88, 96))
-local btn3, paint3 = makeBtn("Net Desync",           102, Color3.fromRGB(150, 74, 0))
-local btn4, paint4 = makeBtn("Under Map",            138, Color3.fromRGB(132, 0, 78))
+local btnDesync, paintDesync = makeBtn("Net Desync", 30, Color3.fromRGB(150, 74, 0))
+local btnUnder,  paintUnder  = makeBtn("Under Map",  66, Color3.fromRGB(132, 0, 78))
 
 local status = Instance.new("TextLabel")
 status.Size                   = UDim2.new(1, -20, 0, 20)
-status.Position               = UDim2.new(0, 10, 0, 174)
+status.Position               = UDim2.new(0, 10, 0, 106)
 status.BackgroundTransparency = 1
 status.Text                   = "idle"
 status.TextColor3             = Color3.fromRGB(118, 118, 126)
@@ -266,139 +196,7 @@ status.TextSize               = 11
 status.Parent                 = frame
 
 --=====================================================================
--- Method 1 — Transparency + LocalTransparencyModifier   [LOCAL ONLY]
---
--- Both properties are client render state, and Roblox replicates
--- property changes server->client only, so nothing here reaches another
--- player. This hides your body from your own camera and nothing else.
--- Kept because it is genuinely useful for that, and because it leaves
--- the rig completely intact.
---
--- Do not run this together with M4: it hides the body M4 exists to let
--- you keep seeing.
---=====================================================================
-
-local m1On, m1Orig, m1Transp, m1EffectClock = false, {}, {}, 0
-
-local function m1HideEffect(inst)
-    local prop = Tracker.effects[inst]
-    if not prop then return end
-    if m1Orig[inst] == nil then m1Orig[inst] = inst[prop] end
-    local want = (prop == "Transparency") and 1 or false
-    if inst[prop] ~= want then inst[prop] = want end
-end
-
-local function m1HidePart(part)
-    if m1Transp[part] == nil then m1Transp[part] = part.Transparency end
-    if part.Transparency ~= 1 then part.Transparency = 1 end
-    if part.LocalTransparencyModifier ~= 1 then part.LocalTransparencyModifier = 1 end
-end
-
-local function m1OnAdd(inst, kind)
-    if not m1On then return end
-    if kind == "part" then m1HidePart(inst) else m1HideEffect(inst) end
-end
-
-local function m1OnChar()
-    if not m1On then return end
-    hideNametag(m1Orig)
-end
-
-local function m1Step(dt)
-    for part in pairs(Tracker.parts) do m1HidePart(part) end
-
-    m1EffectClock += dt
-    if m1EffectClock >= CONFIG.EFFECT_PERIOD then
-        m1EffectClock = 0
-        for inst in pairs(Tracker.effects) do m1HideEffect(inst) end
-        hideNametag(m1Orig)
-    end
-end
-
-local function m1Start()
-    m1On = true
-    Tracker.retain()
-    for part in pairs(Tracker.parts) do m1HidePart(part) end
-    for inst in pairs(Tracker.effects) do m1HideEffect(inst) end
-    hideNametag(m1Orig)
-    RunService:BindToRenderStep("InvisM1", Enum.RenderPriority.Last.Value + 1, m1Step)
-end
-
-local function m1Stop()
-    m1On = false
-    pcall(function() RunService:UnbindFromRenderStep("InvisM1") end)
-
-    for part, t in pairs(m1Transp) do
-        if part.Parent then
-            part.Transparency = t
-            part.LocalTransparencyModifier = 0
-        end
-    end
-    table.clear(m1Transp)
-
-    for inst, saved in pairs(m1Orig) do
-        if inst.Parent then
-            if typeof(saved) == "table" then
-                restoreNametag(saved)
-            else
-                local prop = Tracker.effects[inst]
-                if prop then inst[prop] = saved end
-            end
-        end
-    end
-    table.clear(m1Orig)
-    Tracker.release()
-end
-
---=====================================================================
--- Method 2 — SimulationRadius drop                        [LEGACY]
---
--- The classic desync: drop the client's simulation radius to 0 so it
--- stops claiming physics ownership of its own character and stops
--- pushing root updates, leaving the server on a stale copy.
---
--- Roblox moved network ownership to a server-side decision years ago and
--- stopped honouring client writes to these hidden properties, so this is
--- expected to do nothing in a current game. It is kept as its own toggle
--- rather than bundled into M3 so you can establish, with a second
--- client, whether it still does anything here — it costs nothing to
--- leave off, and M3/M4 do not depend on it.
---=====================================================================
-
-local m2On, m2Conn = false, nil
-
-local function m2Radius(v)
-    if not sethiddenproperty then return end
-    pcall(sethiddenproperty, lp, "SimulationRadius", v)
-    pcall(sethiddenproperty, lp, "MaximumSimulationRadius", v)
-end
-
-local function m2Start()
-    m2On  = true
-    -- Re-asserted every frame: the server re-grants ownership on its own
-    -- cadence, so a single write would be undone.
-    m2Conn = RunService.Heartbeat:Connect(function() m2Radius(0) end)
-end
-
-local function m2Stop()
-    m2On = false
-    if m2Conn then m2Conn:Disconnect() end
-    m2Conn = nil
-    m2Radius(math.huge)
-end
-
---=====================================================================
--- Park — the shared root-lie core behind M3 and M4.
---
--- Heartbeat is the last hook before the replication snapshot, so the
--- value written there is what leaves the machine. RenderStepped runs
--- before the next physics step, so restoring the true position there
--- means the simulation never sees the lie: walking, jumping, collision
--- and animation all behave normally.
---
--- The true position is captured at Heartbeat (post-physics) rather than
--- at RenderStepped, because by RenderStepped the root already holds the
--- fake value written the frame before.
+-- Park — the shared root-lie core behind both methods.
 --
 -- Modes:
 --   "anchor"  park at a fixed point       — you appear to stand still
@@ -408,112 +206,129 @@ end
 --=====================================================================
 
 local Park = {
-    on      = false,
-    mode    = nil,   -- "anchor" | "under"
-    fixed   = nil,   -- CFrame, anchor mode
-    real    = nil,   -- last true root CFrame
-    realVel = nil,   -- last true AssemblyLinearVelocity
-    realAng = nil,   -- last true AssemblyAngularVelocity
-    hold    = 0,     -- frames the lie is suspended
-    off     = 0,     -- last applied offset magnitude, for the readout
-    heart   = nil,
-    bound   = false,
+    on       = false,
+    mode     = nil,   -- "anchor" | "under"
+    fixed    = nil,   -- CFrame, anchor mode
+    real     = nil,   -- last known TRUE root CFrame
+    realVel  = nil,   -- last known true AssemblyLinearVelocity
+    realAng  = nil,   -- last known true AssemblyAngularVelocity
+    lastFake = nil,   -- CFrame written at the previous Heartbeat, or nil
+    holdKey  = false, -- RESYNC_KEY currently held
+    hold     = 0,     -- tail frames after release
+    jitter   = CONFIG.RESYNC_JITTER,
+    off      = 0,     -- last offset WRITTEN, for the readout
+    heart    = nil,
+    step     = nil,
+    bound    = false,
 }
 
 local function parkTarget(realCF)
     if Park.mode == "under" then
         -- Below FallenPartsDestroyHeight the engine deletes parts, and a
-        -- deleted limb is a dead character. Stay clear of that plane
-        -- while still sitting below the root.
-        local rootY   = realCF.Position.Y
-        local floorY  = workspace.FallenPartsDestroyHeight + CONFIG.DESTROY_CLEAR
+        -- deleted root is a dead character. Stay clear of that plane while
+        -- still sitting below yourself.
+        local rootY  = realCF.Position.Y
+        local floorY = workspace.FallenPartsDestroyHeight + CONFIG.DESTROY_CLEAR
         local y = math.min(math.max(rootY - CONFIG.UNDER_DEPTH, floorY), rootY - 4)
         return CFrame.new(realCF.Position.X, y, realCF.Position.Z)
     end
     return Park.fixed
 end
 
-local function parkDown()
-    local hrp = Tracker.hrp
-    if not (hrp and hrp.Parent) then return end
-
-    Park.real    = hrp.CFrame                   -- true, post-physics
-    Park.realVel = hrp.AssemblyLinearVelocity
-    Park.realAng = hrp.AssemblyAngularVelocity
-
-    if Park.hold > 0 then
-        Park.hold -= 1
-        Park.off  = 0
-        if Park.hold == 0 and Park.mode == "anchor" then
-            Park.fixed = hrp.CFrame -- re-anchor wherever we surfaced
-        end
-        return                      -- let the true position replicate
-    end
-
-    local target = parkTarget(Park.real)
-    if not target then return end
-    hrp.CFrame = target
-    Park.off   = (target.Position - Park.real.Position).Magnitude
-end
-
-local function parkUp()
-    if Park.hold > 0 then return end
-    local hrp = Tracker.hrp
-    if not (hrp and hrp.Parent and Park.real) then return end
+-- Put the root back where the player actually is. Bound to BOTH
+-- RenderStepped (before the camera samples it) and Stepped (before physics
+-- runs), so neither the view nor the simulation ever sees the lie.
+local function parkRestore()
+    local hrp = Char.hrp
+    if not (Park.on and hrp and hrp.Parent and Park.real) then return end
     hrp.CFrame = Park.real
-    -- Restore velocity too, not just position. The Heartbeat write can
-    -- shove the HRP into terrain (M4 parks it underground); the physics
-    -- step in between generates a collision-response velocity that
-    -- would otherwise survive the CFrame restore and bleed downward
-    -- frame over frame until fall damage or FallenPartsDestroyHeight
-    -- kills you. Restoring the true post-physics velocity here, not
-    -- zero, keeps legitimate movement (walking, jumping) unaffected.
     if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
     if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
 end
 
+local function parkDown()
+    local ok, hrp = alive()
+    if not ok then return end
+
+    -- Adopt the post-physics root as truth only if a restore actually ran
+    -- this frame. If both restores were skipped the root is still sitting on
+    -- last frame's lie, and adopting it would park the next lie relative to
+    -- the lie — a downward ratchet, one step per dropped frame, ending in
+    -- the void. Reject that sample and keep the last known truth.
+    local captured = hrp.CFrame
+    local stale = Park.lastFake ~= nil
+        and (captured.Position - Park.lastFake.Position).Magnitude < CONFIG.RESTORE_EPSILON
+    if not stale then
+        Park.real    = captured
+        Park.realVel = hrp.AssemblyLinearVelocity
+        Park.realAng = hrp.AssemblyAngularVelocity
+    end
+    if not Park.real then return end
+
+    if Park.holdKey or Park.hold > 0 then
+        if not Park.holdKey then Park.hold -= 1 end
+        Park.off      = 0
+        Park.lastFake = nil
+        if Park.hold == 0 and not Park.holdKey and Park.mode == "anchor" then
+            Park.fixed = Park.real   -- re-anchor wherever we surfaced
+        end
+        -- An unchanged CFrame produces no replication delta, so holding still
+        -- during a resync would send nothing at all and leave the server on
+        -- the stale park. Alternate a sub-stud nudge to guarantee a packet.
+        Park.jitter = -Park.jitter
+        hrp.CFrame  = Park.real + Vector3.new(0, Park.jitter, 0)
+        return
+    end
+
+    local target = parkTarget(Park.real)
+    if not target then return end
+    hrp.CFrame    = target
+    Park.lastFake = target
+    Park.off      = (target.Position - Park.real.Position).Magnitude
+end
+
 local function parkOnChar()
     Park.real, Park.realVel, Park.realAng = nil, nil, nil
+    Park.lastFake = nil
     if Park.mode == "anchor" then
-        local hrp = Tracker.hrp
-        Park.fixed = hrp and hrp.CFrame or nil
+        Park.fixed = Char.hrp and Char.hrp.CFrame or nil
     end
 end
 
 local function parkStart(mode)
     if Park.on then return end
-    Tracker.retain()
 
-    local hrp = Tracker.hrp
-    if not hrp then
-        Tracker.release()
-        error("no character", 0)
-    end
+    local ok, hrp = alive()
+    if not ok then error("no character", 0) end
 
-    Park.mode    = mode
-    Park.fixed   = hrp.CFrame
-    Park.real    = hrp.CFrame
-    Park.realVel = hrp.AssemblyLinearVelocity
-    Park.realAng = hrp.AssemblyAngularVelocity
-    Park.hold    = 0
-    Park.off     = 0
-    Park.on      = true
+    Park.mode     = mode
+    Park.fixed    = hrp.CFrame
+    Park.real     = hrp.CFrame
+    Park.realVel  = hrp.AssemblyLinearVelocity
+    Park.realAng  = hrp.AssemblyAngularVelocity
+    Park.lastFake = nil
+    Park.hold     = 0
+    Park.off      = 0
+    Park.on       = true
 
-    -- Unwind fully if either binding throws, so a failure cannot strand
-    -- the lie running with its button reading OFF.
-    local ok, err = pcall(function()
+    -- Unwind fully if any binding throws, so a failure cannot strand the lie
+    -- running with its button reading OFF.
+    local bindOk, err = pcall(function()
         Park.heart = RunService.Heartbeat:Connect(parkDown)
-        RunService:BindToRenderStep("InvisPark", Enum.RenderPriority.Last.Value + 1, parkUp)
+        Park.step  = RunService.Stepped:Connect(parkRestore)
+        -- First (0) beats RenderPriority.Camera (200): the camera must sample
+        -- the true position, not the lie, or it locks itself at the anchor.
+        RunService:BindToRenderStep("InvisPark", Enum.RenderPriority.First.Value, parkRestore)
         Park.bound = true
     end)
-    if not ok then
+    if not bindOk then
         Park.on = false
         if Park.heart then Park.heart:Disconnect(); Park.heart = nil end
+        if Park.step  then Park.step:Disconnect();  Park.step  = nil end
         if Park.bound then
             pcall(function() RunService:UnbindFromRenderStep("InvisPark") end)
             Park.bound = false
         end
-        Tracker.release()
         error(err, 0)
     end
 end
@@ -523,16 +338,16 @@ local function parkStop()
     Park.on = false
 
     if Park.heart then Park.heart:Disconnect() end
-    Park.heart = nil
+    if Park.step  then Park.step:Disconnect()  end
+    Park.heart, Park.step = nil, nil
     if Park.bound then
         pcall(function() RunService:UnbindFromRenderStep("InvisPark") end)
         Park.bound = false
     end
 
-    -- Leave the root where the player actually is, not on the lie, and
-    -- with its real velocity, not whatever the last underground
-    -- collision left it holding.
-    local hrp = Tracker.hrp
+    -- Leave the root where the player actually is, not on the lie, and with
+    -- its real velocity rather than whatever the last write left it holding.
+    local hrp = Char.hrp
     if hrp and hrp.Parent and Park.real then
         hrp.CFrame = Park.real
         if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
@@ -540,46 +355,48 @@ local function parkStop()
     end
 
     Park.mode, Park.fixed, Park.real = nil, nil, nil
-    Park.realVel, Park.realAng = nil, nil
-    Park.hold, Park.off = 0, 0
-    Tracker.release()
+    Park.realVel, Park.realAng, Park.lastFake = nil, nil, nil
+    Park.holdKey, Park.hold, Park.off = false, 0, 0
 end
 
 UIS.InputBegan:Connect(function(input, gpe)
     if gpe or not Park.on then return end
-    if input.KeyCode == CONFIG.RESYNC_KEY then
-        Park.hold = CONFIG.RESYNC_FRAMES
-    end
+    if input.KeyCode == CONFIG.RESYNC_KEY then Park.holdKey = true end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.KeyCode ~= CONFIG.RESYNC_KEY then return end
+    Park.holdKey = false
+    Park.hold    = CONFIG.RESYNC_FRAMES   -- tail, so a tap still lands
 end)
 
 --=====================================================================
--- Methods 3 and 4 — the two Park modes.
+-- The two modes.
 --
--- M3 leaves your body standing where you switched it on; walk away and
--- the server still has you at the anchor.
+-- Net Desync leaves your body standing where you switched it on; walk away
+-- and the server still has you at the anchor.
 --
--- M4 keeps the lie directly beneath you. Other players see nothing
--- because you are genuinely underground server-side, while your own
--- screen, physics and animation stay at the surface.
+-- Under Map keeps the lie directly beneath you. Other players see nothing
+-- because you are genuinely underground server-side, while your own screen,
+-- physics and animation stay at the surface.
 --
--- Under either one, tap RESYNC_KEY to suspend the lie for a few frames
--- so a server-validated hit resolves from your real position.
+-- Under either one, hold RESYNC_KEY to suspend the lie so a server-validated
+-- hit resolves from your real position.
 --=====================================================================
 
-local m3On, m4On = false, false
+local desyncOn, underOn = false, false
 
-local function m3Start() parkStart("anchor"); m3On = true end
-local function m3Stop()  m3On = false; parkStop() end
-local function m4Start() parkStart("under");  m4On = true end
-local function m4Stop()  m4On = false; parkStop() end
+local function desyncStart() parkStart("anchor"); desyncOn = true end
+local function desyncStop()  desyncOn = false; parkStop() end
+local function underStart()  parkStart("under");  underOn  = true end
+local function underStop()   underOn  = false; parkStop() end
 
 --=====================================================================
 -- Wiring
 --=====================================================================
 
-table.insert(Tracker.onAdd,  m1OnAdd)
-table.insert(Tracker.onChar, m1OnChar)
-table.insert(Tracker.onChar, parkOnChar)
+table.insert(Char.onChar, parkOnChar)
+Char.start()
 
 local function bind(btn, paint, start, stop, guard)
     local on = false
@@ -600,27 +417,27 @@ local function bind(btn, paint, start, stop, guard)
     end)
 end
 
-bind(btn1, paint1, m1Start, m1Stop)
-bind(btn2, paint2, m2Start, m2Stop, function()
-    if not sethiddenproperty then return "no sethiddenproperty" end
-end)
-bind(btn3, paint3, m3Start, m3Stop, function()
-    if m4On then return "turn Under Map off first" end
+bind(btnDesync, paintDesync, desyncStart, desyncStop, function()
+    if underOn then return "turn Under Map off first" end
     if not lp.Character then return "no character" end
 end)
-bind(btn4, paint4, m4Start, m4Stop, function()
-    if m3On then return "turn Net Desync off first" end
+bind(btnUnder, paintUnder, underStart, underStop, function()
+    if desyncOn then return "turn Net Desync off first" end
     if not lp.Character then return "no character" end
 end)
 
--- The readout reports the offset we WRITE, not a claim that the server
--- accepted it. A previous build showed a drift figure derived purely
--- from local position, which climbed whenever you walked and so looked
--- like proof of a desync that was not happening. Only a second client
--- can confirm any of this.
+-- The readout reports the offset we WRITE, never a claim that the server
+-- accepted it. An early build showed a drift figure derived purely from
+-- local position, which climbed whenever he walked and made a dead desync
+-- look alive for two rounds. Only a second client confirms anything here.
 local statusClock = 0
 RunService.Heartbeat:Connect(function(dt)
-    if Park.on and Park.hold > 0 then
+    if not Park.on then
+        status.Text = "idle"
+        return
+    end
+
+    if Park.holdKey or Park.hold > 0 then
         status.Text = "RESYNC — true position sent"
         return
     end
@@ -629,13 +446,6 @@ RunService.Heartbeat:Connect(function(dt)
     if statusClock < 0.1 then return end
     statusClock = 0
 
-    local bits = {}
-    if m1On then bits[#bits + 1] = "self" end
-    if m2On then bits[#bits + 1] = "simrad" end
-    if Park.on then
-        bits[#bits + 1] = string.format("%s sent %.0fst off  [%s]",
-            Park.mode, Park.off, CONFIG.RESYNC_KEY.Name)
-    end
-
-    status.Text = (#bits > 0) and table.concat(bits, "  ·  ") or "idle"
+    status.Text = string.format("%s sent %.0fst off  [hold %s]",
+        Park.mode, Park.off, CONFIG.RESYNC_KEY.Name)
 end)
