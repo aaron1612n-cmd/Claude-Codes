@@ -25,7 +25,8 @@ local CONFIG = {
     RESYNC_FRAMES = 6,                -- how many frames ownership is handed back
     EFFECT_PERIOD = 0.5,              -- seconds between effect re-assert passes
     HIDE_NAMETAG  = true,             -- M1/M4 also kill the humanoid name/health display
-    UNDER_DEPTH   = 512,              -- M4: studs below the root the body is parked at
+    UNDER_DEPTH   = 32,               -- M4: studs below the root the body is parked at
+    DESTROY_CLEAR = 32,               -- M4: min studs to stay above FallenPartsDestroyHeight
     KEEP_TOOL_UP  = true,             -- M4: leave equipped tool parts at the real position
 }
 
@@ -510,12 +511,23 @@ end)
 local m4On = false
 local m4Pose, m4Motors, m4Collide, m4Orig = {}, {}, {}, {}
 local m4Render, m4Heart = nil, nil
+local m4Neck = nil            -- saved Humanoid.RequiresNeck
 
 local ZERO3 = Vector3.new(0, 0, 0)
 
 local function m4Capture(char)
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
+
+    -- Humanoid.RequiresNeck defaults to true, and the engine kills the
+    -- Humanoid the instant the Neck Motor6D stops connecting Head to
+    -- Torso. Breaking the rig below does exactly that, so this has to be
+    -- cleared first or M4 is a suicide button.
+    local hum = Tracker.hum or char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if m4Neck == nil then m4Neck = hum.RequiresNeck end
+        hum.RequiresNeck = false
+    end
 
     -- Pose first: once the motors are off the limbs start drifting.
     local inv = hrp.CFrame:Inverse()
@@ -547,6 +559,10 @@ local function m4Restore()
     end
     table.clear(m4Motors)
 
+    local hum = Tracker.hum
+    if hum and m4Neck ~= nil then hum.RequiresNeck = m4Neck end
+    m4Neck = nil
+
     for part, collide in pairs(m4Collide) do
         if part.Parent then part.CanCollide = collide end
     end
@@ -562,7 +578,15 @@ end
 local function m4Down()
     local hrp = Tracker.hrp
     if not (hrp and hrp.Parent) then return end
-    local under = CFrame.new(hrp.Position.X, hrp.Position.Y - CONFIG.UNDER_DEPTH, hrp.Position.Z)
+
+    -- Anything below FallenPartsDestroyHeight is Destroy()'d by the engine,
+    -- and a destroyed limb is a dead character. Park above that plane, but
+    -- never above the root itself on a map whose floor sits near it.
+    local rootY   = hrp.Position.Y
+    local floorY  = workspace.FallenPartsDestroyHeight + CONFIG.DESTROY_CLEAR
+    local targetY = math.min(math.max(rootY - CONFIG.UNDER_DEPTH, floorY), rootY - 4)
+
+    local under = CFrame.new(hrp.Position.X, targetY, hrp.Position.Z)
 
     for part in pairs(Tracker.parts) do
         if not (CONFIG.KEEP_TOOL_UP and inTool(part)) then
@@ -605,6 +629,8 @@ end
 
 local function m4OnChar(char)
     if not m4On then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return end
     m4Capture(char)
 end
 
@@ -700,16 +726,18 @@ RunService.Heartbeat:Connect(function(dt)
     if statusClock < 0.1 then return end
     statusClock = 0
 
-    if m4On then
-        status.Text = string.format("under map %dst  ·  hitbox up", CONFIG.UNDER_DEPTH)
-    elseif m3On then
-        status.Text = string.format("drift %.1f studs  ·  [%s] resync",
-            m3Drift, CONFIG.RESYNC_KEY.Name)
-    elseif m1On or m2On then
-        local n = 0
-        for _ in pairs(Tracker.parts) do n += 1 end
-        status.Text = string.format("tracking %d parts", n)
-    else
-        status.Text = "idle"
+    -- Compose rather than prioritise: M4 used to mask M3 entirely, which
+    -- made a working desync look dead because the drift readout never
+    -- appeared while Under Map was on.
+    local bits = {}
+    if m1On then bits[#bits + 1] = "self" end
+    if m2On then bits[#bits + 1] = "crush" end
+    if m3On then
+        bits[#bits + 1] = string.format("drift %.1f  [%s]", m3Drift, CONFIG.RESYNC_KEY.Name)
     end
+    if m4On then
+        bits[#bits + 1] = string.format("under %dst", CONFIG.UNDER_DEPTH)
+    end
+
+    status.Text = (#bits > 0) and table.concat(bits, "  ·  ") or "idle"
 end)
