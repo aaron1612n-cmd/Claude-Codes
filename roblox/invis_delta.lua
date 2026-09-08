@@ -32,7 +32,15 @@
 --
 -- Physics always runs from the true position, so movement, animation and
 -- collision behave normally; only the sampled value is a lie. Nothing is
--- structurally modified, so no frozen animation and nothing kills you.
+-- structurally modified, so no frozen animation.
+--
+-- The Heartbeat write is still a physical move, though: for M4 it shoves
+-- the HRP into terrain, and the physics step before the next RenderStepped
+-- generates a real collision-response velocity. Restoring only the CFrame
+-- there left that velocity live, and it bled downward frame over frame
+-- until fall damage or FallenPartsDestroyHeight killed the character —
+-- confirmed by an alt-account observer watching it happen. parkUp now
+-- restores the pre-write velocity alongside the CFrame, not just position.
 --
 -- THE TRADE YOU CANNOT ENGINEER AROUND
 --
@@ -400,14 +408,16 @@ end
 --=====================================================================
 
 local Park = {
-    on    = false,
-    mode  = nil,   -- "anchor" | "under"
-    fixed = nil,   -- CFrame, anchor mode
-    real  = nil,   -- last true root CFrame
-    hold  = 0,     -- frames the lie is suspended
-    off   = 0,     -- last applied offset magnitude, for the readout
-    heart = nil,
-    bound = false,
+    on      = false,
+    mode    = nil,   -- "anchor" | "under"
+    fixed   = nil,   -- CFrame, anchor mode
+    real    = nil,   -- last true root CFrame
+    realVel = nil,   -- last true AssemblyLinearVelocity
+    realAng = nil,   -- last true AssemblyAngularVelocity
+    hold    = 0,     -- frames the lie is suspended
+    off     = 0,     -- last applied offset magnitude, for the readout
+    heart   = nil,
+    bound   = false,
 }
 
 local function parkTarget(realCF)
@@ -427,7 +437,9 @@ local function parkDown()
     local hrp = Tracker.hrp
     if not (hrp and hrp.Parent) then return end
 
-    Park.real = hrp.CFrame          -- true, post-physics
+    Park.real    = hrp.CFrame                   -- true, post-physics
+    Park.realVel = hrp.AssemblyLinearVelocity
+    Park.realAng = hrp.AssemblyAngularVelocity
 
     if Park.hold > 0 then
         Park.hold -= 1
@@ -449,10 +461,19 @@ local function parkUp()
     local hrp = Tracker.hrp
     if not (hrp and hrp.Parent and Park.real) then return end
     hrp.CFrame = Park.real
+    -- Restore velocity too, not just position. The Heartbeat write can
+    -- shove the HRP into terrain (M4 parks it underground); the physics
+    -- step in between generates a collision-response velocity that
+    -- would otherwise survive the CFrame restore and bleed downward
+    -- frame over frame until fall damage or FallenPartsDestroyHeight
+    -- kills you. Restoring the true post-physics velocity here, not
+    -- zero, keeps legitimate movement (walking, jumping) unaffected.
+    if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
+    if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
 end
 
 local function parkOnChar()
-    Park.real = nil
+    Park.real, Park.realVel, Park.realAng = nil, nil, nil
     if Park.mode == "anchor" then
         local hrp = Tracker.hrp
         Park.fixed = hrp and hrp.CFrame or nil
@@ -469,12 +490,14 @@ local function parkStart(mode)
         error("no character", 0)
     end
 
-    Park.mode  = mode
-    Park.fixed = hrp.CFrame
-    Park.real  = hrp.CFrame
-    Park.hold  = 0
-    Park.off   = 0
-    Park.on    = true
+    Park.mode    = mode
+    Park.fixed   = hrp.CFrame
+    Park.real    = hrp.CFrame
+    Park.realVel = hrp.AssemblyLinearVelocity
+    Park.realAng = hrp.AssemblyAngularVelocity
+    Park.hold    = 0
+    Park.off     = 0
+    Park.on      = true
 
     -- Unwind fully if either binding throws, so a failure cannot strand
     -- the lie running with its button reading OFF.
@@ -506,11 +529,18 @@ local function parkStop()
         Park.bound = false
     end
 
-    -- Leave the root where the player actually is, not on the lie.
+    -- Leave the root where the player actually is, not on the lie, and
+    -- with its real velocity, not whatever the last underground
+    -- collision left it holding.
     local hrp = Tracker.hrp
-    if hrp and hrp.Parent and Park.real then hrp.CFrame = Park.real end
+    if hrp and hrp.Parent and Park.real then
+        hrp.CFrame = Park.real
+        if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
+        if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
+    end
 
     Park.mode, Park.fixed, Park.real = nil, nil, nil
+    Park.realVel, Park.realAng = nil, nil
     Park.hold, Park.off = 0, 0
     Tracker.release()
 end
