@@ -45,15 +45,25 @@
 --    adopts the LIE as truth and the next lie is parked relative to it.
 --    That ratchets you downward a step per dropped frame until the void
 --    takes you. Stepped fires with the physics step regardless of
---    rendering, so physics always starts from truth; RESTORE_EPSILON
---    rejects a sample that is still sitting on the last lie as a backstop.
+--    rendering, so physics always starts from truth. Whether a restore ran
+--    is tracked by a flag the restore itself sets — an earlier build
+--    inferred it from distance to the last lie, which froze anchor mode
+--    solid (see parkDown).
 --
 -- 3. Roblox ships a root update only when the CFrame actually CHANGES.
 --    Writing an identical value every frame produces no delta and no
 --    packet, so a player standing perfectly still replicates nothing and
 --    the server holds the stale parked position — the resync appears to do
---    nothing until you walk. The hold window alternates a sub-stud nudge so
---    every frame of it is a genuine delta.
+--    nothing until you walk. Every path that has to push truth back to the
+--    server therefore alternates a sub-stud nudge: the RESYNC_KEY hold
+--    window, and the flush burst that follows switching a mode off.
+--
+-- 4. Parking the root tens of studs from the floor reads to the Humanoid
+--    state machine as a fall. It drops to Freefall and refuses ground
+--    movement until some other transition frees it, which is why a jump
+--    "unsticks" a player who toggled on while standing still. No physics
+--    runs between the Heartbeat that writes the lie and the next restore,
+--    so any state change across that gap is ours and gets put back.
 --
 -- THE TRADE YOU CANNOT ENGINEER AROUND
 --
@@ -67,14 +77,12 @@
 --=====================================================================
 
 local CONFIG = {
-    GUI_NAME        = "InvisGUI",
-    RESYNC_KEY      = Enum.KeyCode.R,  -- hold to send your true position
-    RESYNC_FRAMES   = 15,              -- tail frames after release (~0.25s @60)
-    RESYNC_JITTER   = 0.02,            -- studs, alternating, to force a delta
-    UNDER_DEPTH     = 32,              -- studs below you the root is parked
-    DESTROY_CLEAR   = 32,              -- min studs above FallenPartsDestroyHeight
-    RESTORE_EPSILON = 0.5,             -- studs; nearer the last lie than this
-                                       -- means the restore never ran
+    GUI_NAME      = "InvisGUI",
+    RESYNC_KEY    = Enum.KeyCode.R,  -- hold to send your true position
+    RESYNC_FRAMES = 15,              -- tail frames after release (~0.25s @60)
+    RESYNC_JITTER = 0.02,            -- studs, alternating, to force a delta
+    UNDER_DEPTH   = 32,              -- studs below you the root is parked
+    DESTROY_CLEAR = 32,              -- min studs above FallenPartsDestroyHeight
 }
 
 local Players    = game:GetService("Players")
@@ -196,6 +204,46 @@ status.TextSize               = 11
 status.Parent                 = frame
 
 --=====================================================================
+-- Flush — force the true position out to the server after the lie stops.
+--
+-- Switching a mode off leaves the root sitting on the truth, but the last
+-- value the server ACCEPTED is the lie, and Roblox only ships a root update
+-- when the CFrame changes. A player standing still writes nothing, so the
+-- server holds the parked position until they happen to walk — switching the
+-- mode off looked like it did nothing at all. Drive a short burst of nudged
+-- true positions so a genuine delta leaves the machine either way.
+--=====================================================================
+
+local Flush = {
+    conn   = nil,
+    left   = 0,
+    jitter = CONFIG.RESYNC_JITTER,
+}
+
+function Flush.stop()
+    if Flush.conn then Flush.conn:Disconnect(); Flush.conn = nil end
+    Flush.left = 0
+end
+
+function Flush.start()
+    Flush.left = CONFIG.RESYNC_FRAMES
+    if Flush.conn then return end
+    Flush.conn = RunService.Heartbeat:Connect(function()
+        local hrp = Char.hrp
+        if Flush.left <= 0 or not (hrp and hrp.Parent) then
+            Flush.stop()
+            return
+        end
+        Flush.left  -= 1
+        Flush.jitter = -Flush.jitter
+        -- Read the live CFrame rather than a captured one so real movement
+        -- during the burst still goes through; the sign alternates, so the
+        -- nudge averages out instead of accumulating.
+        hrp.CFrame = hrp.CFrame + Vector3.new(0, Flush.jitter, 0)
+    end)
+end
+
+--=====================================================================
 -- Park — the shared root-lie core behind both methods.
 --
 -- Modes:
@@ -206,20 +254,29 @@ status.Parent                 = frame
 --=====================================================================
 
 local Park = {
-    on       = false,
-    mode     = nil,   -- "anchor" | "under"
-    fixed    = nil,   -- CFrame, anchor mode
-    real     = nil,   -- last known TRUE root CFrame
-    realVel  = nil,   -- last known true AssemblyLinearVelocity
-    realAng  = nil,   -- last known true AssemblyAngularVelocity
-    lastFake = nil,   -- CFrame written at the previous Heartbeat, or nil
-    holdKey  = false, -- RESYNC_KEY currently held
-    hold     = 0,     -- tail frames after release
-    jitter   = CONFIG.RESYNC_JITTER,
-    off      = 0,     -- last offset WRITTEN, for the readout
-    heart    = nil,
-    step     = nil,
-    bound    = false,
+    on        = false,
+    mode      = nil,   -- "anchor" | "under"
+    fixed     = nil,   -- CFrame, anchor mode
+    real      = nil,   -- last known TRUE root CFrame
+    realVel   = nil,   -- last known true AssemblyLinearVelocity
+    realAng   = nil,   -- last known true AssemblyAngularVelocity
+    realState = nil,   -- Humanoid state as of the frame the lie was written
+    restored  = false, -- a restore ran this frame; set by parkRestore
+    holdKey   = false, -- RESYNC_KEY currently held
+    hold      = 0,     -- tail frames after release
+    jitter    = CONFIG.RESYNC_JITTER,
+    off       = 0,     -- last offset WRITTEN, for the readout
+    heart     = nil,
+    step      = nil,
+    bound     = false,
+}
+
+-- States the park teleport can knock the Humanoid out of and that it is safe
+-- to put back. Transient states (Landed, Jumping) are left alone: they resolve
+-- themselves, and forcing one every frame would trap the state machine in it.
+local GROUNDED = {
+    [Enum.HumanoidStateType.Running]          = true,
+    [Enum.HumanoidStateType.RunningNoPhysics] = true,
 }
 
 local function parkTarget(realCF)
@@ -238,37 +295,73 @@ end
 -- Put the root back where the player actually is. Bound to BOTH
 -- RenderStepped (before the camera samples it) and Stepped (before physics
 -- runs), so neither the view nor the simulation ever sees the lie.
-local function parkRestore()
+--
+-- withVelocity is set on the pre-physics pass only. Writing velocity
+-- overrides the Humanoid's mover, so it happens once a frame, in the one
+-- place it changes the simulation, instead of twice.
+local function parkRestore(withVelocity)
     local hrp = Char.hrp
     if not (Park.on and hrp and hrp.Parent and Park.real) then return end
+
     hrp.CFrame = Park.real
-    if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
-    if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
+    if withVelocity then
+        if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
+        if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
+    end
+
+    -- No physics runs between the Heartbeat that wrote the lie and this
+    -- restore, so a Humanoid state change across that gap came from the lie
+    -- and not from the world: a root parked tens of studs off the floor reads
+    -- as a fall. Left alone the Humanoid sits in Freefall refusing ground
+    -- movement until some unrelated transition frees it — which is why a jump
+    -- unsticks a player who toggled a mode on while standing still.
+    local hum = Char.hum
+    if hum and Park.realState and GROUNDED[Park.realState]
+        and hum:GetState() ~= Park.realState
+    then
+        hum:ChangeState(Park.realState)
+    end
+
+    Park.restored = true
 end
+
+local function parkRestoreRender()  parkRestore(false) end
+local function parkRestorePhysics() parkRestore(true)  end
 
 local function parkDown()
     local ok, hrp = alive()
     if not ok then return end
 
     -- Adopt the post-physics root as truth only if a restore actually ran
-    -- this frame. If both restores were skipped the root is still sitting on
+    -- this frame. If every restore was skipped the root is still sitting on
     -- last frame's lie, and adopting it would park the next lie relative to
     -- the lie — a downward ratchet, one step per dropped frame, ending in
-    -- the void. Reject that sample and keep the last known truth.
-    local captured = hrp.CFrame
-    local stale = Park.lastFake ~= nil
-        and (captured.Position - Park.lastFake.Position).Magnitude < CONFIG.RESTORE_EPSILON
-    if not stale then
-        Park.real    = captured
+    -- the void.
+    --
+    -- This used to be inferred from distance to the last lie, and that froze
+    -- anchor mode solid: the anchor is created AT the player, so a player who
+    -- toggled on while standing still was permanently "too close to the lie"
+    -- and their truth stuck at the toggle instant. They could not walk out of
+    -- it either — every restore returned them to the frozen truth and a walk
+    -- step (~0.27st at WalkSpeed 16) never cleared the 0.5st threshold, while
+    -- a jump (~0.83st in a frame) did. A flag set by the restore itself
+    -- measures the actual condition instead of a proxy for it.
+    local restored = Park.restored
+    Park.restored  = false
+    if restored then
+        Park.real    = hrp.CFrame
         Park.realVel = hrp.AssemblyLinearVelocity
         Park.realAng = hrp.AssemblyAngularVelocity
     end
     if not Park.real then return end
 
+    -- Captured before the write, so the restore compares against the state
+    -- the player was genuinely in rather than the one the lie produced.
+    Park.realState = Char.hum and Char.hum:GetState() or nil
+
     if Park.holdKey or Park.hold > 0 then
         if not Park.holdKey then Park.hold -= 1 end
-        Park.off      = 0
-        Park.lastFake = nil
+        Park.off = 0
         if Park.hold == 0 and not Park.holdKey and Park.mode == "anchor" then
             Park.fixed = Park.real   -- re-anchor wherever we surfaced
         end
@@ -282,14 +375,13 @@ local function parkDown()
 
     local target = parkTarget(Park.real)
     if not target then return end
-    hrp.CFrame    = target
-    Park.lastFake = target
-    Park.off      = (target.Position - Park.real.Position).Magnitude
+    hrp.CFrame = target
+    Park.off   = (target.Position - Park.real.Position).Magnitude
 end
 
 local function parkOnChar()
     Park.real, Park.realVel, Park.realAng = nil, nil, nil
-    Park.lastFake = nil
+    Park.realState, Park.restored = nil, false
     if Park.mode == "anchor" then
         Park.fixed = Char.hrp and Char.hrp.CFrame or nil
     end
@@ -301,24 +393,27 @@ local function parkStart(mode)
     local ok, hrp = alive()
     if not ok then error("no character", 0) end
 
-    Park.mode     = mode
-    Park.fixed    = hrp.CFrame
-    Park.real     = hrp.CFrame
-    Park.realVel  = hrp.AssemblyLinearVelocity
-    Park.realAng  = hrp.AssemblyAngularVelocity
-    Park.lastFake = nil
-    Park.hold     = 0
-    Park.off      = 0
-    Park.on       = true
+    Flush.stop()   -- a burst still running would fight the lie
+
+    Park.mode      = mode
+    Park.fixed     = hrp.CFrame
+    Park.real      = hrp.CFrame
+    Park.realVel   = hrp.AssemblyLinearVelocity
+    Park.realAng   = hrp.AssemblyAngularVelocity
+    Park.realState = Char.hum and Char.hum:GetState() or nil
+    Park.restored  = false
+    Park.hold      = 0
+    Park.off       = 0
+    Park.on        = true
 
     -- Unwind fully if any binding throws, so a failure cannot strand the lie
     -- running with its button reading OFF.
     local bindOk, err = pcall(function()
         Park.heart = RunService.Heartbeat:Connect(parkDown)
-        Park.step  = RunService.Stepped:Connect(parkRestore)
+        Park.step  = RunService.Stepped:Connect(parkRestorePhysics)
         -- First (0) beats RenderPriority.Camera (200): the camera must sample
         -- the true position, not the lie, or it locks itself at the anchor.
-        RunService:BindToRenderStep("InvisPark", Enum.RenderPriority.First.Value, parkRestore)
+        RunService:BindToRenderStep("InvisPark", Enum.RenderPriority.First.Value, parkRestoreRender)
         Park.bound = true
     end)
     if not bindOk then
@@ -352,10 +447,16 @@ local function parkStop()
         hrp.CFrame = Park.real
         if Park.realVel then hrp.AssemblyLinearVelocity  = Park.realVel end
         if Park.realAng then hrp.AssemblyAngularVelocity = Park.realAng end
+        -- That write can be a no-op on the wire: the restore already had the
+        -- root sitting on the truth, so there is no delta for Roblox to ship
+        -- and the server keeps the lie until the player walks. Nudge truth out
+        -- properly instead of hoping they move.
+        Flush.start()
     end
 
     Park.mode, Park.fixed, Park.real = nil, nil, nil
-    Park.realVel, Park.realAng, Park.lastFake = nil, nil, nil
+    Park.realVel, Park.realAng, Park.realState = nil, nil, nil
+    Park.restored = false
     Park.holdKey, Park.hold, Park.off = false, 0, 0
 end
 

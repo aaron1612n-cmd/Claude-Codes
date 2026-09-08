@@ -6,7 +6,7 @@ Continuation state for the Delta invisibility script. Keep under ~1.5k tokens; t
 
 - Script: `roblox/invis_delta.lua` on `ClaudeMain`, repo `aaron1612n-cmd/Claude-Codes`
 - Load: `loadstring(game:HttpGet("https://raw.githubusercontent.com/aaron1612n-cmd/Claude-Codes/ClaudeMain/roblox/invis_delta.lua"))()`
-- Dev branch: `claude/wonderful-goldberg-wojkkh`. Merged so far: PRs #19–#27.
+- Dev branch: `claude/friendly-hypatia-9zzuzn`. Merged so far: PRs #19–#27.
 - **Working rule: always merge when ready, no confirmation needed.** draft → ready → merge, standing policy, not a per-PR ask. Don't leave PRs hanging.
 
 ## The replication model (hard-won — don't re-derive)
@@ -34,11 +34,16 @@ Frame order: `RenderStepped → render → Stepped → physics → Heartbeat →
 
 Root holds the lie only between Heartbeat and the next restore — exactly the replication window.
 
-**Three bugs found in the field, all fixed — do not reintroduce:**
+**Bugs found in the field, all fixed — do not reintroduce:**
 
 1. **Restore must beat `RenderPriority.Camera` (200).** Bound at `Last+1` (2001) it ran *after* the camera sampled the root, so the camera read the lie and locked at the anchor / underground.
-2. **`Stepped` restore is not redundant.** Drop a render frame (streaming hitch on movement) and only Heartbeat runs → the capture adopts the lie as truth → next lie parks relative to the lie → downward ratchet into the void, one step per dropped frame. `Stepped` fires with physics regardless of rendering; `RESTORE_EPSILON` (0.5st) rejects a sample still sitting on the last lie as backstop.
-3. **Roblox ships a root update only when the CFrame CHANGES.** Identical value every frame = no delta = no packet, so standing perfectly still replicated nothing and resync silently did nothing until he walked. Hold window alternates a ±0.02st nudge to force a real delta.
+2. **`Stepped` restore is not redundant.** Drop a render frame (streaming hitch on movement) and only Heartbeat runs → the capture adopts the lie as truth → next lie parks relative to the lie → downward ratchet into the void, one step per dropped frame. `Stepped` fires with physics regardless of rendering.
+3. **Roblox ships a root update only when the CFrame CHANGES.** Identical value every frame = no delta = no packet, so standing perfectly still replicated nothing. Every push-truth path now alternates a ±0.02st nudge: the `R` hold window **and** the flush burst after toggling a mode off.
+4. **Never infer "did a restore run?" from distance to the last lie.** The old `RESTORE_EPSILON` (0.5st) test froze anchor mode solid — the anchor is created *at* the player, so standing still meant every capture read "too close to the lie" and truth stuck at the toggle instant. Couldn't walk out either: restore returns you to frozen truth, a walk step is ~0.27st @ WalkSpeed 16, under the 0.5st threshold forever; a jump (~0.83st/frame) cleared it, which was the tell. Now `Park.restored`, a flag the restore itself sets.
+5. **Toggling off didn't resync until he moved.** `parkStop` wrote `hrp.CFrame = Park.real`, but the restore already had the root there → identical value → no delta → server kept the lie. `Flush` burst (15 frames of nudged truth) on stop. Hit both modes.
+6. **A root parked tens of studs off the floor reads to the Humanoid as a fall.** It drops to Freefall and refuses ground movement until an unrelated transition frees it — the other half of "I had to jump." No physics runs between the Heartbeat lie-write and the next restore, so any state change across that gap is ours: `Park.realState` captured pre-write, put back at restore. Only `Running`/`RunningNoPhysics` — forcing a transient state (Landed, Jumping) every frame would trap the state machine.
+
+Velocity is restored on the **`Stepped` pass only**. Writing it overrides the Humanoid's mover, so it happens once a frame where it actually changes physics, not twice.
 
 Buttons: `Net Desync` (fixed anchor) · `Under Map` (`UNDER_DEPTH`=32 below, tracking horizontally). Mutually exclusive. `R` = **hold** to resync (tap leaves a 15-frame tail).
 
@@ -55,6 +60,7 @@ Open questions:
 1. Does Under Map hold now — body and camera staying at the surface while moving?
 2. With the jitter fix, does holding `R` visibly resync on the alt's screen while standing still?
 3. Does damage land **without** `R`? Yes → client-authoritative, no tradeoff. Only with `R` → server-validated, `R` is the tax.
+4. Toggle either mode on while standing perfectly still: can you walk immediately, no jump? Toggle off standing still: does the alt see you snap back without you moving?
 
 ## Lesson
 
